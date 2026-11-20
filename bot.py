@@ -311,6 +311,8 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
+        self.mem_threats = []
+        self.mem_threats_t = -99.0
         self._shoot = None
         self.deadline = 0.0
 
@@ -594,18 +596,31 @@ class Bot:
                 target, tgt_d, tgt_los = m, d, los
         n_close = sum(1 for d, m, los in threats if los and d < 150)
 
-        # ---- retreat decision
+        # ---- retreat decision (earlier when outnumbered; hold cover until healed)
+        if threats:
+            self.mem_threats = [(d, m, False) for d, m, los in threats[:4]]
+            self.mem_threats_t = t
         if target is not None:
             ehp = target.get("hp", 1400)
-            if hpf < 0.33 and not (n_close <= 1 and ehp < hp * 0.6):
+            if hpf < 0.45 and not (n_close <= 1 and ehp < hp * 0.6):
                 self.retreat = True
-            if n_close >= 3 and hpf < 0.6:
+            if n_close >= 2 and hpf < 0.7:
                 self.retreat = True
+            if n_close >= 3 and hpf < 0.85:
+                self.retreat = True
+        elif recently_hit and hpf < 0.45:
+            self.retreat = True
         if self.retreat:
-            if hpf > 0.75 or (not threats and not recently_hit and hpf > 0.5):
+            if hpf > 0.85:
                 self.retreat = False
             elif target is not None and n_close <= 1 and target.get("hp", 1400) < hp * 0.45:
                 self.retreat = False
+            elif not threats and t - self.last_dmg_t > 25 and t - self.mem_threats_t > 25:
+                self.retreat = False
+        if self.retreat and not threats and t - self.mem_threats_t < 15:
+            cover_th = self.mem_threats
+        else:
+            cover_th = threats
 
         # ---- engage decision
         engage_r = 150.0 if laser else 100.0
@@ -640,9 +655,9 @@ class Bot:
             boost = zone_urgent and energy > 5
             if nr <= 1.0 and dnc < 2.0:
                 move = (0.0, 0.0)
-        elif self.retreat and (threats or recently_hit):
+        elif self.retreat:
             label = "retreat"
-            move, boost = self.retreat_move(t, x, y, z, threats, zone_ok, energy)
+            move, boost = self.retreat_move(t, x, y, z, cover_th, zone_ok, energy)
         elif fight:
             label = "fight"
             move, boost = fmv
@@ -696,7 +711,9 @@ class Bot:
         aim_target = target
         loot_tgt = getattr(self, "_shoot", None)  # (pos3, kind) from loot_move
         self._shoot = None
-        if aim_target is None and loot_tgt is None and npcs and hpf > 0.3:
+        if self.retreat:
+            loot_tgt = None
+        if aim_target is None and loot_tgt is None and npcs and hpf > 0.3 and not self.retreat:
             bd = 75.0
             for m in npcs:
                 p = m["pos"]
