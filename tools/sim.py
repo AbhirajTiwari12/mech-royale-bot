@@ -13,6 +13,7 @@ cfg = hello["config"]
 bot = B.Bot(hello)
 nav = bot.nav
 PROF = {}
+ALLMS = []
 def wrap(obj, name):
     f = getattr(obj, name)
     def g(*a, **k):
@@ -76,7 +77,7 @@ while t < 480 and me["hp"] > 0:
                zone=dict(center=cc, radius=cr, next_center=ph["nc"], next_radius=ph["nr"], shrink_start=ph["ss"], shrink_end=ph["se"], dps=ph["dps"]), offer=None)
     obs = json.loads(json.dumps(obs))
     s = time.perf_counter(); a = bot.act(obs); ms = (time.perf_counter() - s) * 1000
-    json.dumps(a); maxms = max(maxms, ms); tot += ms
+    json.dumps(a); maxms = max(maxms, ms); tot += ms; ALLMS.append(ms)
     if ms > 8 and os.environ.get("DBG"): print("SLOW %.1fms t=%.1f %s prof=%s" % (ms, t, a["debug"]["label"], {k: round(v * 1000, 1) for k, v in PROF.items()}))
     PROF.clear()
     lab = a["debug"]["label"].split()[0]; labels[lab] = labels.get(lab, 0) + 1
@@ -158,4 +159,5 @@ while t < 480 and me["hp"] > 0:
             if os.environ.get("DBG"): print("STUCK t=%.1f pos=%s val=%d mv=%s lab=%s path=%s search=%s unst=%s" % (t, [round(v) for v in me["pos"]], nav.val(*me["pos"][:2]), mv, a["debug"]["label"], bot.path and len(bot.path), bot.search is not None, bot.unstuck_until > t))
         lastpos = list(me["pos"])
     tick += 2; t += 0.1
+ALLMS.sort(); print("p99 %.2f p99.9 %.2f" % (ALLMS[int(len(ALLMS)*0.99)], ALLMS[int(len(ALLMS)*0.999)]))
 print("seed %d end t=%.0f hp=%.0f kills=%d cubes=%d weapons=%s out_zone=%.1fs stuck_s=%d avg=%.2fms max=%.1fms %s" % (seed, t, me["hp"], kills, me["cubes"], [w and w["kind"] for w in me["weapons"]], out_zone, stuck, tot / max(1, tick / 2), maxms, labels))

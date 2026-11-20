@@ -49,6 +49,7 @@ def norm2(x, y):
 class Nav:
     def __init__(self, path):
         self.ok = False
+        self.nm_cache = {}
         try:
             with open(path, "rb") as f:
                 hdr = json.loads(f.readline().decode())
@@ -116,6 +117,18 @@ class Nav:
         cj = min(max(cj, 0), nny - 1)
         if nav[cj * nnx + ci] == 1:
             return cj * nnx + ci
+        key = (cj * nnx + ci) * 128 + maxr
+        cache = self.nm_cache
+        if key in cache:
+            return cache[key]
+        r = self._nearest_main(ci, cj, maxr)
+        if len(cache) > 20000:
+            cache.clear()
+        cache[key] = r
+        return r
+
+    def _nearest_main(self, ci, cj, maxr):
+        nnx, nny, nav = self.nnx, self.nny, self.nav
         best = None
         bd = 1e18
         for r in range(1, maxr + 1):
@@ -130,19 +143,19 @@ class Nav:
                             best = j * nnx + i
         return best
 
-    def los(self, ax, ay, az, bx, by, bz):
+    def los(self, ax, ay, az, bx, by, bz, step=2.0):
         """3D line of sight over the surface grid (buildings + terrain). Trees ignored."""
         dx = bx - ax
         dy = by - ay
         d = math.hypot(dx, dy)
-        n = int(d / 2.0)
+        n = int(d / step)
         if n < 3:
-            return True
+            return d < 12.0 or step <= 2.0 or self.los(ax, ay, az, bx, by, bz, 2.0)
         dz = bz - az
         surf = self.surf
         snx, sny, minX, minY = self.snx, self.sny, self.minX, self.minY
         inv = 1.0 / n
-        for k in range(2, n - 1):
+        for k in range(2 if step <= 2.0 else 1, n - 1 if step <= 2.0 else n):
             t = k * inv
             i = int((ax + dx * t - minX) * 0.5)
             j = int((ay + dy * t - minY) * 0.5)
@@ -312,6 +325,10 @@ class Bot:
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
         self.mem_threats = []
+        self.cov_cands = None
+        self.cov_i = 0
+        self.cov_best = None
+        self.cov_bs = -1e18
         self.bullet_flip = False
         self.flip_ok_t = 0.0
         self.mem_threats_t = -99.0
@@ -352,7 +369,7 @@ class Bot:
         if not nav.ok:
             return norm2(gx - x, gy - y)
         if nav.val(x, y) != 1:
-            c = nav.nearest_main(x, y, 60)
+            c = nav.nearest_main(x, y, 36)
             if c is None:
                 return norm2(gx - x, gy - y)
             cx, cy = nav.center(c)
@@ -361,7 +378,7 @@ class Bot:
             return ux, uy
         gx = min(max(gx, nav.minX + 6.0), nav.minX + nav.nnx * nav.nc - 6.0)
         gy = min(max(gy, nav.minY + 6.0), nav.minY + nav.nny * nav.nc - 6.0)
-        gc = nav.nearest_main(gx, gy, 45)
+        gc = nav.nearest_main(gx, gy, 36)
         if gc is None:
             return norm2(gx - x, gy - y)
         if nav.val(gx, gy) != 1:
@@ -385,7 +402,7 @@ class Bot:
         elif self.search is None or abs(self.search.goal % nnx - gc % nnx) > 3 or abs(self.search.goal // nnx - gc // nnx) > 3:
             self.search = Search(nav, nav.cell(x, y), gc)
         if self.search is not None:
-            self.search.run(min(self.deadline, time.perf_counter() + 0.004))
+            self.search.run(min(self.deadline, time.perf_counter() + 0.003))
             if self.search.done:
                 self.path = self.search.path
                 self.path_goal = self.search.goal
@@ -462,7 +479,7 @@ class Bot:
     # ------------------------------------------------------------------ main
     def act(self, obs):
         t0 = time.perf_counter()
-        self.deadline = t0 + 0.012
+        self.deadline = t0 + 0.006
         nav = self.nav
         me = obs["self"]
         t = obs.get("t", 0.0)
@@ -570,9 +587,13 @@ class Bot:
         for m in mechs:
             p = m["pos"]
             d = math.sqrt((p[0] - x) ** 2 + (p[1] - y) ** 2 + (p[2] - z) ** 2)
-            los = (not nav.ok) or nav.los(x, y, z + eye, p[0], p[1], p[2] + 6.0)
-            threats.append((d, m, los))
+            threats.append((d, m, False))
         threats.sort(key=lambda a: a[0])
+        for k in range(len(threats)):
+            d, m, _ = threats[k]
+            p = m["pos"]
+            if k < 5 and d < 260:
+                threats[k] = (d, m, (not nav.ok) or nav.los(x, y, z + eye, p[0], p[1], p[2] + 6.0, 2.0 if d < 120 else 3.0))
         if threats:
             self.last_seen_enemy_t = t
         recently_hit = t - self.last_dmg_t < 3.0
@@ -1005,20 +1026,29 @@ class Bot:
                 return norm2(x - e[0], y - e[1]), energy > 10
             return (0.0, 0.0), False
         exposed = any(los for d, m, los in th)
-        if t - self.cover_t > 0.5 or self.cover is None:
+        th = th[:3]
+        if self.cov_cands is None and (t - self.cover_t > 0.7 or self.cover is None):
             self.cover_t = t
-            best = None
-            bs = -1e18
             cands = [(x, y, 0.0)]
-            base = self.rng.random() * TAU
-            for k in range(16):
-                a = base + k * TAU / 16
-                ca, sa = math.cos(a), math.sin(a)
-                for r in (12.0, 24.0, 40.0, 60.0):
-                    cands.append((x + ca * r, y + sa * r, r))
             if self.cover is not None:
                 cands.append((self.cover[0], self.cover[1], math.hypot(self.cover[0] - x, self.cover[1] - y)))
-            for cx, cy, r in cands:
+            base = self.rng.random() * TAU
+            for r in (14.0, 28.0, 48.0):
+                for k in range(12):
+                    a = base + k * TAU / 12
+                    cands.append((x + math.cos(a) * r, y + math.sin(a) * r, r))
+            self.cov_cands = cands
+            self.cov_i = 0
+            self.cov_best = None
+            self.cov_bs = -1e18
+        if self.cov_cands is not None:
+            cands = self.cov_cands
+            stop = min(self.deadline, time.perf_counter() + 0.002)
+            i = self.cov_i
+            n = len(cands)
+            while i < n:
+                cx, cy, r = cands[i]
+                i += 1
                 if r > 0 and nav.val(cx, cy) != 1:
                     continue
                 if not zone_ok(cx, cy, -12):
@@ -1031,15 +1061,21 @@ class Bot:
                     dd = math.hypot(p[0] - cx, p[1] - cy)
                     if dd < mind:
                         mind = dd
-                    if hidden and nav.los(p[0], p[1], p[2] + 8.0, cx, cy, cz + 6.0):
+                    if hidden and nav.los(p[0], p[1], p[2] + 8.0, cx, cy, cz + 6.0, 4.0):
                         hidden = False
-                s = (120.0 if hidden else 0.0) - 0.7 * r + 0.3 * min(mind, 150.0)
+                sc = (120.0 if hidden else 0.0) - 0.7 * r + 0.3 * min(mind, 150.0)
                 if self.cover is not None and abs(cx - self.cover[0]) < 0.1 and abs(cy - self.cover[1]) < 0.1:
-                    s += 15
-                if s > bs:
-                    bs = s
-                    best = (cx, cy)
-            self.cover = best
+                    sc += 15
+                if sc > self.cov_bs:
+                    self.cov_bs = sc
+                    self.cov_best = (cx, cy)
+                if time.perf_counter() > stop:
+                    break
+            self.cov_i = i
+            if i >= n:
+                self.cov_cands = None
+                if self.cov_best is not None:
+                    self.cover = self.cov_best
         if self.cover is None:
             if th:
                 e = th[0][1]["pos"]
@@ -1185,6 +1221,11 @@ def fallback(obs, last):
 
 
 def main():
+    try:
+        import gc
+        gc.disable()
+    except Exception:
+        pass
     q = queue.Queue()
     threading.Thread(target=_reader, args=(q,), daemon=True).start()
     bot = None
