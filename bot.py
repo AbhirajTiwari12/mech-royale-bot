@@ -312,6 +312,8 @@ class Bot:
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
         self.mem_threats = []
+        self.bullet_flip = False
+        self.flip_ok_t = 0.0
         self.mem_threats_t = -99.0
         self._shoot = None
         self.deadline = 0.0
@@ -631,6 +633,25 @@ class Bot:
             self.strafe = -self.strafe if self.rng.random() < 0.75 else self.strafe
             self.strafe_until = t + 0.45 + self.rng.random() * 0.9
 
+        # inbound bullets aimed at where we are heading -> change direction
+        self.bullet_flip = False
+        for pr in obs.get("projectiles") or []:
+            if pr.get("kind") != "gun":
+                continue
+            p = pr["pos"]
+            v = pr["vel"]
+            sp2 = v[0] * v[0] + v[1] * v[1]
+            if sp2 < 1.0:
+                continue
+            tc = ((x - p[0]) * v[0] + (y - p[1]) * v[1]) / sp2
+            if tc <= 0.0 or tc > 0.45:
+                continue
+            fx, fy = x + vx * tc, y + vy * tc
+            ox, oy = fx - (p[0] + v[0] * tc), fy - (p[1] + v[1] * tc)
+            if ox * ox + oy * oy < 12.0 and abs(p[2] + v[2] * tc - (z + 4.5)) < 7.0:
+                self.bullet_flip = True
+                break
+
         label = "idle"
         arrived_prev = self.nav_arrived
         self.nav_arrived = False
@@ -661,6 +682,26 @@ class Bot:
         elif fight:
             label = "fight"
             move, boost = fmv
+            # under-armed: grab a close weapon first, shooting on the way
+            if not (zap or laser) or not (zap and laser):
+                bw = None
+                bwd = 70.0 if not (zap or laser) else 35.0
+                for iid, it in items.items():
+                    if it["type"] != "pickup" or self.black.get(iid, 0) > t:
+                        continue
+                    if it["kind"] == "mortar" and (zap or laser or mortar):
+                        continue
+                    p = it["pos"]
+                    dd = math.hypot(p[0] - x, p[1] - y)
+                    if dd < bwd and self.want_pickup(me, it["kind"])[0] and zone_ok(p[0], p[1], -10):
+                        if nav.ok and (nav.nearest_main(p[0], p[1], 1) is None or abs(p[2] - nav.surf_at(p[0], p[1])) > 4.0):
+                            continue
+                        bwd = dd
+                        bw = p
+                if bw is not None:
+                    label = "arm"
+                    move = self.nav_move(x, y, bw[0], bw[1]) if bwd > 1.0 else (0.0, 0.0)
+                    boost = energy > 40 and bwd > 15
         else:
             mv = self.loot_move(t, me, obs, npcs, hpf, zone_ok, threats)
             if mv is not None:
@@ -902,7 +943,12 @@ class Bot:
         elif laser:
             R = 70.0
         else:
-            R = 40.0
+            R = 32.0
+        finish = e.get("hp", 1400) < 320 and me.get("hp", 0) > 0.4 * max(1.0, me.get("max_hp", 1400)) and "lightning" not in ew
+        if finish:
+            R = min(R, 20.0)
+            if not los:
+                return self.nav_move(x, y, ex, ey), energy > 50
         if not los:
             # go find it (or let it come to us around the corner when we out-range it at close quarters)
             if d < 60 and not zap:
@@ -930,6 +976,12 @@ class Bot:
             tw = 1.0
             rad *= 0.3
             boost = boost or energy > 35
+        if finish and d > R + 8:
+            boost = boost or energy > 40
+        if self.bullet_flip and t >= self.flip_ok_t:
+            self.strafe = -self.strafe
+            self.strafe_until = t + 0.4 + self.rng.random() * 0.5
+            self.flip_ok_t = t + 0.35
         sx, sy = -dy * self.strafe, dx * self.strafe
         mx, my = norm2(dx * rad + sx * tw, dy * rad + sy * tw)
         if not (self.step_ok(x, y, mx, my) and zone_ok(x + mx * 8, y + my * 8, -15)):
