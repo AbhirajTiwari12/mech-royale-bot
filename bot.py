@@ -281,6 +281,7 @@ UPGRADE_DMG = [
     "plating", "armor", "nanites", "servos", "gun_mag", "gun_velocity", "reactor", "capacitor", "gyros", "laser_pierce",
     "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity",
 ]
+WRANK_GZ = {"lightning": 4, "gun": 3, "laser": 2, "mortar": 1}
 WRANK_GL = {"laser": 4, "gun": 3, "lightning": 2, "mortar": 1}
 WRANK = {"lightning": 4, "laser": 3, "gun": 2, "mortar": 1}
 
@@ -330,7 +331,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180, "roofprio": 0, "kiter": 0, "bystander_first": 0, "econ_cubes": 0, "econ_cap": 170, "econ_nokill": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180, "roofprio": 0, "kiter": 0, "bystander_first": 0, "econ_cubes": 0, "econ_cap": 170, "econ_nokill": 0, "precharge": 1, "boostfight": 0}
         self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -442,7 +443,7 @@ class Bot:
         for i in (1, 0):
             if kinds[i] is None:
                 return True, None
-        WR = WRANK_GL if self.F["gl"] else WRANK
+        WR = WRANK_GZ if self.F.get("gz", 0) else (WRANK_GL if self.F["gl"] else WRANK)
         r = WR.get(kind, 0)
         lo = 0 if WR.get(kinds[0], 0) <= WR.get(kinds[1], 0) else 1
         if r > WR.get(kinds[lo], 0):
@@ -1210,6 +1211,8 @@ class Bot:
                         fire[li] = True
                 elif cd <= 0.11 and shot_los and hdist < lrange and not (self.retreat and hpf < 0.2):
                     fire[li] = True
+                elif F.get("precharge", 0) and cd <= 0.11 and not shot_los and tgt_d < 90:
+                    fire[li] = True   # target is just out of sight: have the beam ready for when it reappears
             # mortar takes over the aim briefly when ready
             if mortar and (mortar.get("cooldown") or 0) <= 0.2 and not (laser and charge > 0):
                 d2 = math.hypot(aim_target["pos"][0] - x, aim_target["pos"][1] - y)
@@ -1663,6 +1666,8 @@ class Bot:
                 if rad > 0:
                     return self.nav_move(x, y, ex, ey), boost
                 mx, my = norm2(sx, sy)
+        if self.F.get("boostfight", 0) and energy > 30 and not (laser and (laser.get("charge") or 0) > 0):
+            boost = True   # spare energy (no lightning to feed): strafe and close at boost speed
         return (mx, my), boost
 
     # ------------------------------------------------------------------ peek (fight one at a time)
