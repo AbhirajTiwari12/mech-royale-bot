@@ -330,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180}
+        self.F = {"roof": 1, "retreat": 1, "r1": 0.5, "r2": 0.5, "r3": 0.5, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 0, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180, "roofprio": 1, "kiter": 0, "bystander_first": 0}
         self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -795,6 +795,8 @@ class Bot:
                 s = 0.5 * d + 0.09 * m.get("hp", 1000) + (0 if los else 60)
                 if m.get("id") == self.cur_target:
                     s -= 15
+                if F.get("bystander_first", 0) and los and self.hostile.get(m.get("id"), 0) <= t and d < 160:
+                    s -= 60   # not hunting us (so probably a stronger tier, still passive): take it first
                 if F["rearpref"] and los:
                     p_ = m["pos"]
                     if abs(angdiff(math.atan2(y - p_[1], x - p_[0]), (m.get("aim") or [0, 0])[0])) > 1.7:
@@ -996,6 +998,12 @@ class Bot:
             label = "roof"
             hide = self.retreat or hpf < 0.55 or n_close >= 3
             move, boost, jump = self.roof_move(t, me, cover_th if cover_th else threats, target, hide, energy)
+        elif F.get("roofprio", 0) and rf is not None and not self.onroof and self.mode == "squad" and (gun or laser) \
+                and not (target is not None and tgt_los and tgt_d < 45):
+            # roof sniper: get on the home roof first, fight from up there
+            label = "toroof"
+            move, boost, jump = self.roof_move(t, me, cover_th if cover_th else threats, target, True, energy)
+            no_unstuck = no_unstuck or self.climb is not None
         elif self.retreat and rf is not None and math.hypot(x - rf["camp"][0], y - rf["camp"][1]) < 220:
             label = "toroof"
             move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
@@ -1553,6 +1561,26 @@ class Bot:
         ew = e.get("weapons") or []
         dx, dy = norm2(ex - x, ey - y)
         boost = False
+        if self.F.get("kiter", 0):
+            R = 115.0 if laser else 85.0
+            rad = 0.0
+            if d < R - 10:
+                rad = -1.0
+            elif d > R + 25:
+                rad = 0.6
+            if not los:
+                return None
+            sx, sy = -dy * self.strafe, dx * self.strafe
+            for sgn in (1.0, -1.0):
+                mx, my = norm2(dx * rad + sx * sgn * (0.55 if rad < 0 else 1.0), dy * rad + sy * sgn * (0.55 if rad < 0 else 1.0))
+                if self.step_ok(x, y, mx, my) and zone_ok(x + mx * 10, y + my * 10, -12):
+                    if sgn < 0:
+                        self.strafe = -self.strafe
+                        self.strafe_until = t + 0.7
+                    return (mx, my), (rad < 0 and d < 60 and energy > 25)
+            # boxed in: break line of sight instead
+            cm, cb = self.retreat_move(t, x, y, z, [(d, e, True)], zone_ok, energy)
+            return cm, cb
         if "lightning" in ew and self.F["zaprespect"] and (laser or not zap or self.F["zaprespect"] > 1):
             R = 75.0 if laser else 58.0
         elif zap and energy > 12:
