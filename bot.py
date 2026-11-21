@@ -330,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 1, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 0, "rearpref": 0}
         try:
             self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
         except Exception:
