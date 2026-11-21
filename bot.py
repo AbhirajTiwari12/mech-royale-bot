@@ -343,6 +343,7 @@ class Bot:
         self.base_chase = self.F.get("chase", 0)
         self.kills = 0
         self.alive0 = None
+        self.ramped = False
         self.hp_prev = {}
         self.hp_prev_tick = -99
         self.myhits_prev = set()
@@ -610,7 +611,14 @@ class Bot:
                 early = obs.get("t", 0.0) < self.F["econ_t"]
                 self.F["selective"] = 1 if early else self.base_sel
                 self.F["chase"] = 0 if early else self.base_chase
-            if self.mode == "ffa" and self.F.get("mode") != "squad":
+            if self.mode == "ffa" and not self.ramped and self.F.get("ramp_t", 0):
+                # few deaths this late = a lobby of hiders: hiding no longer gains places, so start hunting
+                if obs.get("t", 0.0) >= self.F["ramp_t"] and alive_now >= self.F.get("ramp_alive", 9):
+                    self.ramped = True
+                    self.F.update({"selective": 0, "avoid": 0, "chase": 1, "roof": 0, "gl": 1, "dmgup": 1, "peek": 0,
+                                   "zaprespect": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "third": 0.0})
+                    self.F.update(self.F.get("ramp_prof", {}) or {})
+            if self.mode == "ffa" and self.F.get("mode") != "squad" and not self.ramped:
                 end = alive_now <= self.F.get("end_alive", 3)
                 self.F["avoid"] = 0 if end else self.PROFILES["ffa"]["avoid"] if "avoid" not in self.env_flags else self.env_flags["avoid"]
                 self.F["chase"] = 1 if end else 0
@@ -1873,7 +1881,7 @@ def _reader(q):
 
 
 def fallback(obs, last):
-    a = {"tick": obs["tick"]}
+    a = {"tick": obs.get("tick", 0)}
     try:
         me = obs["self"]
         zn = obs["zone"]
@@ -1931,23 +1939,39 @@ def main():
                 return
         if latest is None:
             continue
-        action = None
-        if bot is not None:
-            try:
-                action = bot.act(latest)
-                last = {k: action[k] for k in ("move", "aim", "boost") if k in action}
-            except Exception:
-                errors += 1
-                if errors <= 5 or errors % 200 == 0:
-                    log("act failed at tick %s (%d):\n%s" % (latest.get("tick"), errors, traceback.format_exc()))
-                action = None
-        if action is None:
-            action = fallback(latest, last)
-        action["tick"] = latest["tick"]
+        tick = 0
         try:
-            _send(action)
-        except (TypeError, ValueError):
-            _send({"tick": latest["tick"]})
+            tick = latest.get("tick", 0)
+            action = None
+            if bot is not None and isinstance(latest.get("self"), dict):
+                try:
+                    action = bot.act(latest)
+                    last = {k: action[k] for k in ("move", "aim", "boost") if k in action}
+                except Exception:
+                    errors += 1
+                    if errors <= 5 or errors % 200 == 0:
+                        log("act failed at tick %s (%d):\n%s" % (tick, errors, traceback.format_exc()))
+                    action = None
+            if action is None:
+                action = fallback(latest, last)
+            for k in ("move", "aim"):
+                v = action.get(k)
+                if v is not None and not (isinstance(v, (list, tuple)) and len(v) == 2 and all(isinstance(c, (int, float)) and c == c and abs(c) < 1e9 for c in v)):
+                    action.pop(k, None)
+            action["tick"] = tick
+            try:
+                _send(action)
+            except (TypeError, ValueError):
+                _send({"tick": tick})
+        except (BrokenPipeError, KeyboardInterrupt):
+            return
+        except Exception:
+            # never let one bad message kill the process: a dead bot is a sitting target
+            try:
+                log("loop error:\n%s" % traceback.format_exc())
+                _send({"tick": tick})
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
