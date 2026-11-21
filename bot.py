@@ -329,7 +329,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30}
         try:
             self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
         except Exception:
@@ -857,6 +857,22 @@ class Bot:
                     label = "arm"
                     move = self.nav_move(x, y, bw[0], bw[1]) if bwd > 1.0 else (0.0, 0.0)
                     boost = energy > 40 and bwd > 15
+            if F["cubegrab"] and label == "fight":
+                # scoop power cubes mid-fight: each is +4% damage and HP on the spot
+                bc = None
+                bcd = float(F["cubegrab"])
+                for iid, it in items.items():
+                    if it["type"] != "cube" or self.black.get(iid, 0) > t:
+                        continue
+                    p = it["pos"]
+                    dd = math.hypot(p[0] - x, p[1] - y)
+                    if dd < bcd and abs(p[2] - z) < 6.0 and zone_ok(p[0], p[1], -10) and (not nav.ok or nav.nearest_main(p[0], p[1], 1) is not None):
+                        bcd = dd
+                        bc = p
+                if bc is not None:
+                    label = "cube"
+                    move = self.nav_move(x, y, bc[0], bc[1])
+                    boost = False
         else:
             mv = None
             if not (self.onroof and contact):
