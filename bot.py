@@ -330,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180, "roofprio": 0, "kiter": 0, "bystander_first": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 1, "econ_t": 0, "near_r": 100, "roofprio": 0, "kiter": 0, "bystander_first": 0, "econ_cubes": 10, "econ_cap": 170, "econ_nokill": 1}
         self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -344,6 +344,9 @@ class Bot:
         self.kills = 0
         self.alive0 = None
         self.ramped = False
+        self.econ = False
+        self.econ_done = False
+        self.npc_mem = {}
         self.hp_prev = {}
         self.hp_prev_tick = -99
         self.myhits_prev = set()
@@ -606,11 +609,21 @@ class Bot:
                     self.set_mode("ffa")   # mechs are dying that we did not kill: others fight each other
                 elif self.mode == "open" and tt >= self.F.get("open_s", 40.0):
                     self.set_mode("squad")
-            if self.F.get("econ_t", 0) and self.mode != "ffa":
-                # economy opening: until econ_t only fight what attacks us, and farm crates/drones meanwhile
-                early = obs.get("t", 0.0) < self.F["econ_t"]
+            self.econ = False
+            if (self.F.get("econ_t", 0) or self.F.get("econ_cubes", 0)) and self.mode != "ffa":
+                # economy phase: only fight what attacks us and farm drones/crates/cubes; ends at a cube count or a time cap
+                tt_ = obs.get("t", 0.0)
+                if self.F.get("econ_cubes", 0):
+                    early = (obs["self"].get("cubes", 0) < self.F["econ_cubes"]) and tt_ < self.F.get("econ_cap", 170.0) and not self.econ_done
+                    if not early:
+                        self.econ_done = True
+                else:
+                    early = tt_ < self.F["econ_t"]
+                self.econ = bool(early)
                 self.F["selective"] = 1 if early else self.base_sel
                 self.F["chase"] = 0 if early else self.base_chase
+                if self.F.get("econ_cubes", 0):
+                    self.F["drops"] = 1 if early else 2
             if self.mode == "ffa" and not self.ramped and self.F.get("ramp_t", 0):
                 # few deaths this late = a lobby of hiders: hiding no longer gains places, so start hunting
                 kr = self.F.get("kill_ramp", 0)
@@ -883,6 +896,13 @@ class Bot:
                 self.mem_threats_t = t
             elif t - self.mem_threats_t > 6 and not recently_hit:
                 self.retreat = False
+        elif self.econ and F.get("econ_nokill", 0) and hpf > 0.5:
+            # farming with one hunter on us: do not thin the squad yet. Shoot back only while it is hurting us,
+            # and stop shooting when it is nearly dead (a dead hunter brings more hunters).
+            fight = False
+            self.retreat = False
+            thp = (target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400))) if target is not None else 1.0
+            hold_fire = (not recently_hit) or thp < 0.3
         elif F["farm_until"] and t < F["farm_until"] and hpf > 0.5:
             # power up first: do not fight (or kill) the early hunter, keep looting
             fight = False
@@ -1036,7 +1056,7 @@ class Bot:
                     label = "arm"
                     move = self.nav_move(x, y, bw[0], bw[1]) if bwd > 1.0 else (0.0, 0.0)
                     boost = energy > 40 and bwd > 15
-            if F.get("drops", 0) and label in ("fight", "arm"):
+            if F.get("drops", 0) == 1 and label in ("fight", "arm"):
                 # a landed (or landing) supply drop is a full heal plus 3 cubes: go and stand in its ring
                 bdp = None
                 bdd = 220.0
@@ -1798,6 +1818,9 @@ class Bot:
         enemy_near = threats and threats[0][0] < self.F.get("near_r", 180)
         if self.F["farm_until"] and t < self.F["farm_until"]:
             enemy_near = False
+        econ = self.econ
+        if econ:
+            enemy_near = False
 
         def reachable(p):
             if not nav.ok:
@@ -1824,7 +1847,9 @@ class Bot:
                 val = 75
             else:
                 val = 38
-                if enemy_near or hpf < 0.7:
+                if econ:
+                    val = 50
+                elif enemy_near or hpf < 0.7:
                     continue
             if not zone_ok(p[0], p[1]) or not reachable(p):
                 continue
@@ -1844,13 +1869,24 @@ class Bot:
                 if s > bs:
                     bs = s
                     best = (dr["id"], "drop", p, 0)
-        if hpf > 0.6 and not enemy_near:
-            for m in npcs:
+        # drones: remember where they live so we can come back for them
+        nm = self.npc_mem
+        for m in npcs:
+            nm[m["id"]] = (m["pos"], t, m)
+        if nm:
+            for nid in [k for k, v in nm.items() if t - v[1] > 150 or (t - v[1] > 1.0 and math.hypot(v[0][0] - x, v[0][1] - y) < 25)]:
+                nm.pop(nid, None)
+        if (hpf > 0.6 and not enemy_near) or (econ and hpf > 0.35):
+            cand = list(npcs)
+            if econ:
+                seen_ids = set(m["id"] for m in npcs)
+                cand += [v[2] for k, v in nm.items() if k not in seen_ids]
+            for m in cand:
                 p = m["pos"]
-                if not zone_ok(p[0], p[1]):
+                if not zone_ok(p[0], p[1]) or self.black.get(m["id"], 0) > t:
                     continue
                 d = math.hypot(p[0] - x, p[1] - y)
-                s = 34 / (d + 25.0)
+                s = (95 if econ else 34) / (d + 25.0)
                 if self.loot_goal == m["id"]:
                     s *= 1.35
                 if s > bs:
@@ -1868,6 +1904,11 @@ class Bot:
             self.loot_goal = None
             return None
         d = math.hypot(p[0] - x, p[1] - y)
+        if typ == "npc" and not any(m_.get("id") == iid for m_ in npcs):
+            # remembered drone, not in view: walk to where it lives
+            if d < 12.0:
+                self.npc_mem.pop(iid, None)
+            return self.nav_move(x, y, p[0], p[1])
         if typ in ("crate", "npc"):
             clear = (not nav.ok) or nav.los(x, y, z + 7, p[0], p[1], p[2] + h)
             rng_ = 32.0 if typ == "crate" else 50.0

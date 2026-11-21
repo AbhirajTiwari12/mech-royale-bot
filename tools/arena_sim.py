@@ -107,6 +107,8 @@ class Sim:
             roof = i < cfg["crates"]["count"] * cfg["crates"]["roof_fraction"]
             cid = self.nid["c"]; self.nid["c"] += 1
             self.crates[cid] = dict(id=cid, pos=self.rand_cell(zc, zr, 2 if roof else 1), hp=float(cfg["crates"]["hp"]))
+        for i in range(cfg["npc"]["count"]):
+            self.crates[100 + i] = dict(id=100 + i, pos=self.rand_cell(zc, zr, 1), hp=float(cfg["npc"]["hp"]), npc=True)
         self.projs = []
         self.seen_t = {}
         self.deaths = 0
@@ -218,6 +220,11 @@ class Sim:
         if by is not None and by["player"]:
             by["events"].append(dict(type="hit", target=c["id"], amount=amount, weapon="gun"))
             by["last_dmg"] = self.t
+        if c["hp"] <= 0 and c["id"] in self.crates and c.get("npc"):
+            del self.crates[c["id"]]
+            for _ in range(self.cfg["npc"]["cubes"]):
+                self.add_cube(c["pos"])
+            return
         if c["hp"] <= 0 and c["id"] in self.crates:
             del self.crates[c["id"]]
             self.add_cube(c["pos"])
@@ -563,6 +570,12 @@ class Sim:
             self.rng.shuffle(avail)
             m["noffer"] += 1
             m["offer"] = dict(id=m["noffer"], expires=t + 5, choices=[dict(id=u["id"], name=u["name"], desc=u["desc"]) for u in avail[:3]])
+        for c in self.crates.values():
+            if c.get("npc") and vis(c["pos"], 3.5):
+                seen.append(dict(id=c["id"], kind="npc", pos=[round(v, 2) for v in c["pos"]], vel=[0, 0, 0], aim=[0, 0], hp=c["hp"], max_hp=350))
+                # the drone shoots back at close range (25 dmg/s, ~60% of shots land)
+                if math.dist(c["pos"], m["pos"]) < 45 and self.rng.random() < 0.06:
+                    self.damage(m, 25.0, c["pos"], None, "npc")
         ev = m["events"]
         m["events"] = []
         obs = dict(type="obs", tick=self.tick, t=round(t, 2), alive=sum(1 for q in self.mechs if q["alive"]),
@@ -571,7 +584,7 @@ class Sim:
                              in_zone=m.get("in_zone", True), weapons=ws, stats=m["stats"]),
                    mechs=seen,
                    projectiles=[dict(id=pr["id"], kind=pr["kind"], pos=[round(v, 2) for v in pr["pos"]], vel=[round(v, 2) for v in pr["vel"]]) for pr in self.projs if pr["by"] is not m and abs(pr["pos"][0] - x) < 200 and abs(pr["pos"][1] - y) < 200],
-                   crates=[dict(id=c["id"], pos=c["pos"], hp=c["hp"]) for c in self.crates.values() if vis(c["pos"], 2.4)],
+                   crates=[dict(id=c["id"], pos=c["pos"], hp=c["hp"]) for c in self.crates.values() if not c.get("npc") and vis(c["pos"], 2.4)],
                    cubes=[dict(id=c["id"], pos=c["pos"]) for c in self.cubes.values() if vis(c["pos"], 1.0)],
                    pickups=[dict(id=c["id"], kind=c["kind"], pos=c["pos"]) for c in self.pickups.values() if vis(c["pos"], 1.0)],
                    sounds=[], beams=[], events=ev, drops=[],
