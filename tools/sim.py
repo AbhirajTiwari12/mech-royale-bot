@@ -70,7 +70,7 @@ while t < 480 and me["hp"] > 0:
     events = []
     alive_h = [h for h in hunters if h["hp"] > 0]
     obs = dict(type="obs", tick=tick, t=round(t, 2), alive=1 + len(alive_h),
-               self=dict(id=0, pos=[round(v, 2) for v in me["pos"]], vel=me["vel"], aim=me["aim"], hp=me["hp"], max_hp=1400, energy=me["energy"], max_energy=100, grounded=True, cubes=me["cubes"], upgrades=[], in_zone=inz, weapons=me["weapons"], stats=obs0["self"]["stats"]),
+               self=dict(id=0, pos=[round(v, 2) for v in me["pos"]], vel=me["vel"], aim=me["aim"], hp=me["hp"], max_hp=1400, energy=me["energy"], max_energy=100, grounded=me.get('gr', True), cubes=me["cubes"], upgrades=[], in_zone=inz, weapons=me["weapons"], stats=obs0["self"]["stats"]),
                mechs=[{k: h[k] for k in ("id", "kind", "pos", "vel", "aim", "hp", "max_hp", "cubes", "weapons", "charging")} for h in alive_h if vis(h["pos"])],
                projectiles=[], crates=[c for c in crates if vis(c["pos"])], cubes=[c for c in cubes if vis(c["pos"])], pickups=[p for p in pickups if vis(p["pos"])],
                sounds=[], beams=[], events=me.pop("events", []), drops=[],
@@ -86,8 +86,28 @@ while t < 480 and me["hp"] > 0:
     for w in me["weapons"]:
         if w and w["kind"] == "laser" and w.get("charge", 0) > 0: sp *= 0.5
     me["energy"] = max(0, me["energy"] - 1.7) if a.get("boost") else min(100, me["energy"] + 1.8)
-    me["vel"] = [mv[0] * sp, mv[1] * sp, 0]
-    step(me["pos"], me["vel"], 0.1)
+    gr = me.get("gr", True)
+    vzz = me.get("vz", 0.0)
+    if a.get("jump") and gr: vzz = 11.0; gr = False
+    hv = me["vel"][:2]
+    for _ in range(2):
+        acc = 58.5 if gr else 12.0
+        for q in (0, 1):
+            dv = mv[q] * sp - hv[q]; hv[q] += max(-acc * 0.05, min(acc * 0.05, dv))
+        p = me["pos"]
+        for q in (0, 1):
+            np_ = list(p); np_[q] += hv[q] * 0.05
+            if nav.surf_at(np_[0], np_[1]) <= p[2] + 1.2: p[q] = np_[q]
+            else: hv[q] = 0.0
+        g = nav.surf_at(p[0], p[1])
+        if not gr:
+            if a.get("boost") and me["energy"] > 0: vzz = min(10.0, vzz + 34 * 0.05); me["energy"] -= 0.75 - 0.09
+            vzz -= 22 * 0.05; p[2] += vzz * 0.05
+            if p[2] <= g: p[2] = g; gr = True; vzz = 0.0
+        else:
+            if p[2] < g + 1.21 and p[2] > g - 0.5: p[2] = g
+            elif p[2] > g: gr = False
+    me["gr"] = gr; me["vz"] = vzz; me["vel"] = [hv[0], hv[1], vzz]
     if "aim" in a:
         d = B.angdiff(a["aim"][0], me["aim"][0]); me["aim"] = [me["aim"][0] + max(-0.4, min(0.4, d)), a["aim"][1]]
     if "take" in a:
@@ -133,6 +153,7 @@ while t < 480 and me["hp"] > 0:
             if o["hp"] <= 0:
                 if o in crates: crates.remove(o); cubes.append(dict(id=5000 + len(cubes) + tick, pos=o["pos"]))
                 else: kills += 1; ev.append(dict(type="kill", target=o["id"]))
+    if os.environ.get("DBG3") and tick % 10 == 0: print("%.1f %s pos=%s gr=%s en=%.0f climb=%s roof=%s" % (t, a["debug"]["label"], [round(v, 1) for v in me["pos"]], me["gr"], me["energy"], bot.climb and bot.climb["ph"], bot.roof))
     for c in list(cubes):
         if math.dist(c["pos"][:2], me["pos"][:2]) < 3.5: cubes.remove(c); me["cubes"] += 1
     for h in alive_h:

@@ -324,6 +324,39 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
+        self.F = {"roof": 0, "retreat": 1, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 1, "sel_near": 45.0, "zaprespect": 1, "kite": 0, "peek": 1}
+        try:
+            self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
+        except Exception:
+            pass
+        self.pk_cands = None
+        self.pk_i = 0
+        self.pk_best = None
+        self.pk_bs = -1e18
+        self.pk_t = -99.0
+        self.pk_spot = None
+        self.pk_score = 0.0
+        self.hostile = {}
+        self.dist_hist = {}
+        self.bystanders = []
+        self.roofs = []
+        try:
+            with open(os.path.join(HERE, "roofs.json")) as f:
+                self.roofs = json.load(f)
+        except Exception:
+            self.roofs = []
+        self.roof = None          # index of the home roof
+        self.roof_t = -99.0
+        self.roof_bad = {}
+        self.climb = None
+        self.climb_fails = 0
+        self.onroof = False
+        self.rp_cands = None
+        self.rp_i = 0
+        self.rp_best = None
+        self.rp_bs = -1e18
+        self.rp_t = -99.0
+        self.rp_target = None
         self.mem_threats = []
         self.cov_cands = None
         self.cov_i = 0
@@ -438,6 +471,8 @@ class Bot:
     def step_ok(self, x, y, dx, dy, dist=6.0):
         if not self.nav.ok:
             return True
+        if self.onroof:
+            return self.nav.val(x + dx * dist, y + dy * dist) == 2 and self.nav.val(x + dx * dist * 0.5, y + dy * dist * 0.5) == 2
         return self.nav.val(x + dx * dist, y + dy * dist) == 1 and self.nav.val(x + dx * dist * 0.5, y + dy * dist * 0.5) != 0
 
     # ------------------------------------------------------------------ aiming
@@ -479,6 +514,7 @@ class Bot:
     # ------------------------------------------------------------------ main
     def act(self, obs):
         t0 = time.perf_counter()
+        F = self.F
         self.deadline = t0 + 0.006
         nav = self.nav
         me = obs["self"]
@@ -513,6 +549,8 @@ class Bot:
         # ---- events
         for ev in obs.get("events") or []:
             ty = ev.get("type")
+            if ty == "damaged" and ev.get("by") is not None and ev.get("by") < 100:
+                self.hostile[ev.get("by")] = t + 20.0
             if ty == "damaged" and ev.get("by") is not None:
                 self.last_dmg_t = t
                 self.last_dmg_bearing = ev.get("bearing")
@@ -597,6 +635,32 @@ class Bot:
         if threats:
             self.last_seen_enemy_t = t
         recently_hit = t - self.last_dmg_t < 3.0
+        if F["selective"]:
+            # only mechs that act hostile (shot us, or close in while aiming at us) are fought
+            hs = self.hostile
+            dh = self.dist_hist
+            keep = []
+            for d, m, los in threats:
+                mid = m.get("id")
+                prev = dh.get(mid)
+                if prev is None or t - prev[0] >= 1.0:
+                    if prev is not None and t - prev[0] < 2.5 and los:
+                        closing = (prev[1] - d) / max(0.1, t - prev[0])
+                        p = m["pos"]
+                        aim_at_me = abs(angdiff(math.atan2(y - p[1], x - p[0]), (m.get("aim") or [0, 0])[0])) < 0.3
+                        if closing > 4.0 and aim_at_me and d < 170:
+                            hs[mid] = t + 15.0
+                    dh[mid] = (t, d)
+                if d < F["sel_near"] and los:
+                    hs[mid] = max(hs.get(mid, 0), t + 5.0)
+                if m.get("charging") and los:
+                    p = m["pos"]
+                    if abs(angdiff(math.atan2(y - p[1], x - p[0]), (m.get("aim") or [0, 0])[0])) < 0.15:
+                        hs[mid] = t + 15.0
+                if hs.get(mid, 0) > t:
+                    keep.append((d, m, los))
+            self.bystanders = [a_ for a_ in threats if hs.get(a_[1].get("id"), 0) <= t]
+            threats = keep
 
         _, gun = self.w_slot(me, "gun")
         gi, _ = self.w_slot(me, "gun")
@@ -618,6 +682,7 @@ class Bot:
                 bests = s
                 target, tgt_d, tgt_los = m, d, los
         n_close = sum(1 for d, m, los in threats if los and d < 150)
+        self.n_close = n_close
 
         # ---- retreat decision (earlier when outnumbered; hold cover until healed)
         if threats:
@@ -625,16 +690,18 @@ class Bot:
             self.mem_threats_t = t
         if target is not None:
             ehp = target.get("hp", 1400)
-            if hpf < 0.45 and not (n_close <= 1 and ehp < hp * 0.6):
+            if hpf < F["r1"] and not (n_close <= 1 and ehp < hp * 0.6):
                 self.retreat = True
-            if n_close >= 2 and hpf < 0.7:
+            if n_close >= 2 and hpf < F["r2"]:
                 self.retreat = True
-            if n_close >= 3 and hpf < 0.85:
+            if n_close >= 3 and hpf < F["r3"]:
                 self.retreat = True
-        elif recently_hit and hpf < 0.45:
+        elif recently_hit and hpf < F["r1"]:
             self.retreat = True
+        if not F["retreat"]:
+            self.retreat = False
         if self.retreat:
-            if hpf > 0.85:
+            if hpf > F["rexit"]:
                 self.retreat = False
             elif target is not None and n_close <= 1 and target.get("hp", 1400) < hp * 0.45:
                 self.retreat = False
@@ -677,12 +744,33 @@ class Bot:
         arrived_prev = self.nav_arrived
         self.nav_arrived = False
         # ================= movement =================
+        # ---- home roof
+        if not F["roof"]:
+            self.roof = None
+        elif t - self.roof_t > 1.0:
+            self.roof_t = t
+            self.pick_roof(t, x, y, zc, zr, ncx, ncy, nr, margin)
+        rf = self.roofs[self.roof] if self.roof is not None else None
+        self.onroof = bool(rf is not None and me.get("grounded", True) and z > rf["z"] - 3.5 and abs(z - nav.surf_at(x, y)) < 1.6
+                           and math.hypot(x - rf["camp"][0], y - rf["camp"][1]) < rf["rad"] + 8)
+        if rf is None:
+            self.climb = None
+        no_unstuck = self.onroof or self.climb is not None
+        same_level = target is not None and self.onroof and abs(target["pos"][2] - z) < 5.0 and tgt_d < 70
+        contact = bool(threats) or recently_hit or t - self.last_seen_enemy_t < 8.0
         zone_need = self.zone_mode and (dnc > nr * 0.55 or nr <= 1.0 or not in_zone)
         if nr <= 1.0 and in_zone and dnc < max(3.0, zr * 0.3) and (fight or self.retreat) and edge_gap > 5:
             zone_need = False
         fmv = None
+        if self.onroof and not same_level:
+            fight = False
         if fight and not (zone_need and zone_urgent):
             fmv = self.fight_move(t, me, target, tgt_d, tgt_los, zap, laser, energy, zone_ok)
+            if F["peek"] and len(threats) >= 2 and fmv is not None:
+                pr = 24.0 if (zap and "lightning" not in (target.get("weapons") or [])) else (70.0 if laser else 40.0)
+                pm = self.peek_move(t, me, threats, target, pr, zone_ok, energy)
+                if pm is not None:
+                    fmv = (pm, False)
             if fmv is None:
                 fight = False
         if zone_need and (zone_urgent or not fight or edge_gap < margin * 0.6):
@@ -697,6 +785,21 @@ class Bot:
             boost = zone_urgent and energy > 5
             if nr <= 1.0 and dnc < 2.0:
                 move = (0.0, 0.0)
+            if zone_urgent:
+                self.climb = None
+        elif rf is not None and self.climb is not None:
+            label = "climb"
+            move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
+        elif rf is not None and self.onroof and contact and not same_level:
+            label = "roof"
+            hide = self.retreat or hpf < 0.55 or n_close >= 3
+            move, boost, jump = self.roof_move(t, me, cover_th if cover_th else threats, target, hide, energy)
+        elif self.retreat and rf is not None and math.hypot(x - rf["camp"][0], y - rf["camp"][1]) < 220:
+            label = "toroof"
+            move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
+            no_unstuck = no_unstuck or self.climb is not None
+            if self.climb is None and not self.onroof and energy > 80 and any(a_[2] for a_ in threats):
+                boost = True
         elif self.retreat:
             label = "retreat"
             move, boost = self.retreat_move(t, x, y, z, cover_th, zone_ok, energy)
@@ -724,10 +827,16 @@ class Bot:
                     move = self.nav_move(x, y, bw[0], bw[1]) if bwd > 1.0 else (0.0, 0.0)
                     boost = energy > 40 and bwd > 15
         else:
-            mv = self.loot_move(t, me, obs, npcs, hpf, zone_ok, threats)
+            mv = None
+            if not (self.onroof and contact):
+                mv = self.loot_move(t, me, obs, npcs, hpf, zone_ok, threats)
             if mv is not None:
                 label = "loot"
                 move = mv
+            elif rf is not None:
+                label = "nest"
+                move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
+                no_unstuck = no_unstuck or self.climb is not None
             else:
                 label = "roam"
                 if self.roam is None or arrived_prev or t - self.roam_t > 20 or math.hypot(self.roam[0] - x, self.roam[1] - y) < 8 or not zone_ok(self.roam[0], self.roam[1]):
@@ -913,6 +1022,8 @@ class Bot:
                     self.unstuck_until = t  # landed
             else:
                 move = self.unstuck_dir
+        elif no_unstuck:
+            self.hist = []
         elif len(self.hist) >= 12 and mvmag > 0.5:
             t1, x1, y1, m1 = self.hist[0]
             trav = 0.0
@@ -950,6 +1061,177 @@ class Bot:
         act["debug"] = {"label": "%s hp%d" % (label, hp)}
         return act
 
+    # ------------------------------------------------------------------ roofs
+    def pick_roof(self, t, x, y, zc, zr, ncx, ncy, nr, margin):
+        if not self.roofs or not self.nav.ok:
+            self.roof = None
+            return
+        def valid(i):
+            r = self.roofs[i]
+            cx, cy = r["camp"]
+            if self.roof_bad.get(i, 0) > t:
+                return False
+            return math.hypot(cx - ncx, cy - ncy) < nr - r["rad"] * 0.5 - 8 and math.hypot(cx - zc[0], cy - zc[1]) < zr - 25
+        if self.roof is not None and valid(self.roof):
+            return
+        if self.climb is not None:
+            return
+        self.roof = None
+        best = None
+        bs = -1e18
+        for i, r in enumerate(self.roofs):
+            if not valid(i):
+                continue
+            cx, cy = r["camp"]
+            d = math.hypot(cx - x, cy - y)
+            if d > 260:
+                continue
+            H = r["z"] - r["acc"][0][4]
+            sc = -d + 5.0 * min(r["inset"] * 3.0, 24.0) + (25.0 if 12 <= H <= 30 else 0.0) - (40.0 if H > 30 else 0.0)
+            if sc > bs:
+                bs = sc
+                best = i
+        self.roof = best
+        self.rp_cands = None
+        self.rp_target = None
+
+    def roof_move(self, t, me, threats, target, hide, energy):
+        """Go to / climb / hold the home roof. Returns (move, boost, jump)."""
+        nav = self.nav
+        r = self.roofs[self.roof]
+        x, y, z = me["pos"]
+        vx, vy, vz = me.get("vel", [0, 0, 0])
+        grounded = me.get("grounded", True)
+        rz = r["z"]
+        if self.onroof:
+            self.climb = None
+            return self.roof_hold(t, me, r, threats, target, hide), False, False
+        cl = self.climb
+        if cl is None:
+            # nearest usable access point
+            best = None
+            bd = 1e18
+            for a in r["acc"]:
+                d = math.hypot(a[0] - x, a[1] - y)
+                if d < bd:
+                    bd = d
+                    best = a
+            if bd > 2.5:
+                mv = self.nav_move(x, y, best[0], best[1])
+                if self.nav_arrived:
+                    self.roof_bad[self.roof] = t + 60
+                return mv, False, False
+            cl = self.climb = {"a": best, "ph": "wait", "t0": t}
+        a = cl["a"]
+        H = rz - a[4]
+        dx, dy = norm2(a[2] - x, a[3] - y)
+        if cl["ph"] == "wait":
+            need = min(95.0, H * 1.8 + 14.0)
+            if energy < need and t - cl["t0"] < 6.0:
+                if math.hypot(a[0] - x, a[1] - y) > 3.0:
+                    return norm2(a[0] - x, a[1] - y), False, False
+                return (0.0, 0.0), False, False
+            cl["ph"] = "push"
+            cl["t0"] = t
+        if cl["ph"] == "push":
+            if grounded and (t - cl["t0"] > 1.6 or (t - cl["t0"] > 0.4 and math.hypot(vx, vy) < 2.0)):
+                cl["ph"] = "jet"
+                cl["t0"] = t
+                return (dx, dy), False, True
+            return (dx, dy), False, False
+        # jet phase
+        el = t - cl["t0"]
+        if grounded and el > 0.4:
+            if z > rz - 2.0:
+                self.climb = None
+                self.climb_fails = 0
+                return (dx, dy), False, False
+            self.climb_fails += 1
+            self.climb = None
+            if self.climb_fails >= 2:
+                self.roof_bad[self.roof] = t + 90
+                self.climb_fails = 0
+                self.roof = None
+            return (dx, dy), False, False
+        if el > 8.0:
+            self.climb = None
+            self.roof_bad[self.roof] = t + 90
+            self.roof = None
+            return (dx, dy), False, False
+        boost = energy > 0.5 and (z < rz + 1.2 or (vz < -1.0 and z < rz + 3.0))
+        return (dx, dy), boost, (grounded and el <= 0.4)
+
+    def roof_hold(self, t, me, r, threats, target, hide):
+        nav = self.nav
+        x, y, z = me["pos"]
+        th = [a for a in threats[:4] if a[0] < 280][:3]
+        if self.rp_cands is None and t - self.rp_t > 0.7:
+            self.rp_t = t
+            self.rp_cands = r["cells"]
+            self.rp_i = 0
+            self.rp_best = None
+            self.rp_bs = -1e18
+        if self.rp_cands is not None:
+            cands = self.rp_cands
+            n = len(cands)
+            i = self.rp_i
+            stop = min(self.deadline, time.perf_counter() + 0.002)
+            tid = target.get("id") if target is not None else None
+            cur = self.rp_target
+            while i < n:
+                cx, cy, ins = cands[i]
+                i += 1
+                d = math.hypot(cx - x, cy - y)
+                # straight walk must stay on the roof
+                okline = True
+                k = int(d / 3.0)
+                for q in range(1, k + 1):
+                    f = q / (k + 1.0)
+                    if nav.val(x + (cx - x) * f, y + (cy - y) * f) != 2:
+                        okline = False
+                        break
+                if not okline:
+                    continue
+                cz = nav.surf_at(cx, cy)
+                nvis = 0
+                tvis = False
+                for dd, m, los in th:
+                    p = m["pos"]
+                    if nav.los(p[0], p[1], p[2] + 7.0, cx, cy, cz + 4.5, 2.0):
+                        nvis += 1
+                        if m.get("id") == tid:
+                            tvis = True
+                if hide or tid is None:
+                    sc = -100.0 * nvis + 3.0 * min(ins, 8) - 0.3 * d
+                else:
+                    sc = (80.0 if tvis else 0.0) - 70.0 * (nvis - (1 if tvis else 0)) - 0.3 * d + 1.0 * min(ins, 8)
+                if cur is not None and abs(cx - cur[0]) < 0.1 and abs(cy - cur[1]) < 0.1:
+                    sc += 12.0
+                if sc > self.rp_bs:
+                    self.rp_bs = sc
+                    self.rp_best = (cx, cy)
+                if time.perf_counter() > stop:
+                    break
+            self.rp_i = i
+            if i >= n:
+                self.rp_cands = None
+                if self.rp_best is not None:
+                    self.rp_target = self.rp_best
+        tg = self.rp_target
+        if tg is None:
+            tg = r["camp"]
+            if nav.val(x, y) == 2:
+                # camp may not be on a straight roof line; stay put until the search finishes
+                return (0.0, 0.0)
+        d = math.hypot(tg[0] - x, tg[1] - y)
+        if d < 1.5:
+            return (0.0, 0.0)
+        ux, uy = norm2(tg[0] - x, tg[1] - y)
+        # never step off the edge
+        if nav.val(x + ux * 4.0, y + uy * 4.0) != 2 and nav.val(x, y) == 2:
+            return (0.0, 0.0)
+        return (ux, uy)
+
     # ------------------------------------------------------------------ fight
     def fight_move(self, t, me, e, d, los, zap, laser, energy, zone_ok):
         x, y, z = me["pos"]
@@ -957,7 +1239,9 @@ class Bot:
         ew = e.get("weapons") or []
         dx, dy = norm2(ex - x, ey - y)
         boost = False
-        if zap and energy > 12:
+        if "lightning" in ew and self.F["zaprespect"] and (laser or not zap or self.F["zaprespect"] > 1):
+            R = 75.0 if laser else 58.0
+        elif zap and energy > 12:
             R = 24.0
         elif "lightning" in ew:
             R = 75.0 if laser else 58.0
@@ -965,6 +1249,9 @@ class Bot:
             R = 70.0
         else:
             R = 32.0
+        nh = getattr(self, "n_close", 1)
+        if self.F["kite"] and nh >= 2:
+            R = min(140.0, max(R, 45.0) + self.F["kite"] * (nh - 1))
         finish = e.get("hp", 1400) < 320 and me.get("hp", 0) > 0.4 * max(1.0, me.get("max_hp", 1400)) and "lightning" not in ew
         if finish:
             R = min(R, 20.0)
@@ -1015,6 +1302,80 @@ class Bot:
                     return self.nav_move(x, y, ex, ey), boost
                 mx, my = norm2(sx, sy)
         return (mx, my), boost
+
+    # ------------------------------------------------------------------ peek (fight one at a time)
+    def peek_move(self, t, me, threats, target, R, zone_ok, energy):
+        """With several hostiles around, stand where only the target can see us. Returns move or None."""
+        nav = self.nav
+        if not nav.ok or target is None:
+            return None
+        x, y, z = me["pos"]
+        th = threats[:4]
+        tid = target.get("id")
+        if self.pk_cands is None and t - self.pk_t > 0.6:
+            self.pk_t = t
+            cands = [(x, y, 0.0)]
+            if self.pk_spot is not None:
+                cands.append((self.pk_spot[0], self.pk_spot[1], math.hypot(self.pk_spot[0] - x, self.pk_spot[1] - y)))
+            base = self.rng.random() * TAU
+            for r in (9.0, 18.0, 30.0, 45.0):
+                for k in range(10):
+                    a = base + k * TAU / 10
+                    cands.append((x + math.cos(a) * r, y + math.sin(a) * r, r))
+            self.pk_cands = cands
+            self.pk_i = 0
+            self.pk_best = None
+            self.pk_bs = -1e18
+        if self.pk_cands is not None:
+            cands = self.pk_cands
+            stop = min(self.deadline, time.perf_counter() + 0.002)
+            i = self.pk_i
+            n = len(cands)
+            tp = target["pos"]
+            while i < n:
+                cx, cy, r = cands[i]
+                i += 1
+                if r > 0 and nav.val(cx, cy) != 1:
+                    continue
+                if not zone_ok(cx, cy, -12):
+                    continue
+                cz = nav.surf_at(cx, cy) if r > 0 else z
+                others = 0
+                tvis = False
+                for d, m, los in th:
+                    p = m["pos"]
+                    if nav.los(p[0], p[1], p[2] + 7.0, cx, cy, cz + 4.5, 3.0):
+                        if m.get("id") == tid:
+                            tvis = True
+                        else:
+                            others += 1
+                dt_ = math.hypot(tp[0] - cx, tp[1] - cy)
+                sc = (60.0 if tvis else 0.0) - 70.0 * others - 0.35 * abs(dt_ - R) - 0.5 * r
+                if self.pk_spot is not None and abs(cx - self.pk_spot[0]) < 0.1 and abs(cy - self.pk_spot[1]) < 0.1:
+                    sc += 10
+                if sc > self.pk_bs:
+                    self.pk_bs = sc
+                    self.pk_best = (cx, cy)
+                if time.perf_counter() > stop:
+                    break
+            self.pk_i = i
+            if i >= n:
+                self.pk_cands = None
+                self.pk_spot = self.pk_best
+                self.pk_score = self.pk_bs
+        if self.pk_spot is None:
+            return None
+        cx, cy = self.pk_spot
+        d = math.hypot(cx - x, cy - y)
+        if d < 2.5:
+            # jiggle sideways relative to the target so we are not a standing target
+            tp = target["pos"]
+            ux, uy = norm2(tp[0] - x, tp[1] - y)
+            sx, sy = -uy * self.strafe, ux * self.strafe
+            if self.step_ok(x, y, sx, sy, 4.0):
+                return (sx * 0.7, sy * 0.7)
+            return (0.0, 0.0)
+        return self.nav_move(x, y, cx, cy)
 
     # ------------------------------------------------------------------ retreat
     def retreat_move(self, t, x, y, z, threats, zone_ok, energy):
