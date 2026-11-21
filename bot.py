@@ -335,9 +335,14 @@ class Bot:
         self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
-            self.env_flags = json.loads(os.environ.get("MECH_FLAGS", "{}"))
+            with open(os.path.join(HERE, "flags.json")) as f_:
+                self.env_flags.update(json.load(f_))
         except Exception:
-            self.env_flags = {}
+            pass
+        try:
+            self.env_flags.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
+        except Exception:
+            pass
         self.base_F = dict(self.F)
         self.mode = "squad"
         self.base_sel = self.F.get("selective", 0)
@@ -415,6 +420,9 @@ class Bot:
         "ffa": {"retreat": 1, "r1": 0.6, "r2": 0.8, "r3": 0.9, "rexit": 0.9, "selective": 1, "peek": 1, "zaprespect": 2,
                 "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1, "gl": 0, "drops": 0, "econ_cubes": 0, "near_r": 180},
     }
+
+    PROFILES["ffa0"] = dict(PROFILES["ffa"], roof=0)          # same, but hide on the ground only
+    PROFILES["ffa0d"] = dict(PROFILES["ffa"], roof=0, den=1)  # ground only, idle in an enclosed spot
 
     def set_mode(self, name):
         f = dict(self.base_F)

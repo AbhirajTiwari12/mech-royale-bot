@@ -3,6 +3,6 @@
 FROM python:3.12.8-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /bot
-COPY bot.py nav.bin roofs.json /bot/
+COPY bot.py nav.bin roofs.json flags.json /bot/
 RUN python3 -m py_compile /bot/bot.py && chmod -R a+rX /bot
 ENTRYPOINT ["python3", "-u", "/bot/bot.py"]
