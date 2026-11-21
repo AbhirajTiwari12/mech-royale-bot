@@ -330,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 0, "rearpref": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 0, "dmgup": 0, "cubegrab": 0, "gl": 0, "rearpref": 0, "drops": 1, "econ_t": 0, "near_r": 180}
         self.F.update({"mode": "auto", "open_s": 0.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -339,6 +339,8 @@ class Bot:
             self.env_flags = {}
         self.base_F = dict(self.F)
         self.mode = "squad"
+        self.base_sel = self.F.get("selective", 0)
+        self.base_chase = self.F.get("chase", 0)
         self.kills = 0
         self.alive0 = None
         self.F.update(self.env_flags)
@@ -408,6 +410,8 @@ class Bot:
         f.update(self.env_flags)
         self.F = f
         self.mode = name
+        self.base_sel = f.get("selective", 0)
+        self.base_chase = f.get("chase", 0)
 
     # ------------------------------------------------------------------ helpers
     def w_slot(self, me, kind):
@@ -570,6 +574,11 @@ class Bot:
                     self.set_mode("ffa")   # mechs are dying that we did not kill: others fight each other
                 elif self.mode == "open" and tt >= self.F.get("open_s", 40.0):
                     self.set_mode("squad")
+            if self.F.get("econ_t", 0) and self.mode != "ffa":
+                # economy opening: until econ_t only fight what attacks us, and farm crates/drones meanwhile
+                early = obs.get("t", 0.0) < self.F["econ_t"]
+                self.F["selective"] = 1 if early else self.base_sel
+                self.F["chase"] = 0 if early else self.base_chase
             if self.mode == "ffa" and self.F.get("mode") != "squad":
                 end = alive_now <= self.F.get("end_alive", 3)
                 self.F["avoid"] = 0 if end else self.PROFILES["ffa"]["avoid"] if "avoid" not in self.env_flags else self.env_flags["avoid"]
@@ -866,7 +875,7 @@ class Bot:
         self.nav_arrived = False
         # ================= movement =================
         # ---- home roof
-        if not F["roof"]:
+        if not F["roof"] or t < F.get("roof_t", 0):
             self.roof = None
         elif t - self.roof_t > 1.0:
             self.roof_t = t
@@ -947,6 +956,27 @@ class Bot:
                     label = "arm"
                     move = self.nav_move(x, y, bw[0], bw[1]) if bwd > 1.0 else (0.0, 0.0)
                     boost = energy > 40 and bwd > 15
+            if F.get("drops", 0) and label in ("fight", "arm"):
+                # a landed (or landing) supply drop is a full heal plus 3 cubes: go and stand in its ring
+                bdp = None
+                bdd = 220.0
+                for dr in obs.get("drops") or []:
+                    try:
+                        p = dr["pos"]
+                        dd = math.hypot(p[0] - x, p[1] - y)
+                        if dd < bdd and float(dr.get("lands_in", 0) or 0) < dd / 10.0 + 6.0 and zone_ok(p[0], p[1], -8) and (hpf < 0.9 or me.get("cubes", 0) < 10):
+                            bdd = dd
+                            bdp = p
+                    except Exception:
+                        continue
+                if bdp is not None:
+                    label = "drop"
+                    if bdd > 3.5:
+                        move = self.nav_move(x, y, bdp[0], bdp[1])
+                        boost = energy > 50 and bdd > 40
+                    else:
+                        move = (0.0, 0.0)
+                        boost = False
             if F["cubegrab"] and label == "fight":
                 # scoop power cubes mid-fight: each is +4% damage and HP on the spot
                 bc = None
@@ -1665,7 +1695,7 @@ class Bot:
         x, y, z = me["pos"]
         best = None
         bs = 0.0
-        enemy_near = threats and threats[0][0] < 180
+        enemy_near = threats and threats[0][0] < self.F.get("near_r", 180)
         if self.F["farm_until"] and t < self.F["farm_until"]:
             enemy_near = False
 
@@ -1708,8 +1738,9 @@ class Bot:
         for dr in obs.get("drops") or []:
             p = dr["pos"]
             d = math.hypot(p[0] - x, p[1] - y)
-            if d / 10.0 + 3 < dr.get("lands_in", 0) + 40 and zone_ok(p[0], p[1], -5) and d < 260 and not enemy_near:
-                s = 130 / (d + 25.0)
+            dg = self.F.get("drops", 0)
+            if d / 10.0 + 3 < dr.get("lands_in", 0) + 40 and zone_ok(p[0], p[1], -5) and d < (320 if dg else 260) and (dg or not enemy_near):
+                s = (260 if dg else 130) / (d + 25.0)
                 if s > bs:
                     bs = s
                     best = (dr["id"], "drop", p, 0)
