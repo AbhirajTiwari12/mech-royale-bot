@@ -413,7 +413,7 @@ class Bot:
         "open": {"retreat": 1, "selective": 1, "peek": 1, "zaprespect": 1, "chase": 0},
         # free-for-all: outlive the others
         "ffa": {"retreat": 1, "r1": 0.6, "r2": 0.8, "r3": 0.9, "rexit": 0.9, "selective": 1, "peek": 1, "zaprespect": 2,
-                "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1, "gl": 0},
+                "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1, "gl": 0, "drops": 0, "econ_cubes": 0, "near_r": 180},
     }
 
     def set_mode(self, name):
@@ -628,6 +628,9 @@ class Bot:
                 self.F["chase"] = 0 if early else self.base_chase
                 if self.F.get("econ_cubes", 0):
                     self.F["drops"] = 1 if early else 2
+            if self.mode == "ffa" and self.F.get("ffa_econ", 0) and not self.ramped:
+                # free-for-all economy: value drones/crates highly whenever it is safe to loot at all
+                self.econ = obs["self"].get("cubes", 0) < self.F["ffa_econ"]
             # measurement probes: go fully passive (never shoot, hide) after a time or a kill count
             if self.mode != "ffa" and not self.probe_passive:
                 pt_ = self.F.get("passive_t", 0)

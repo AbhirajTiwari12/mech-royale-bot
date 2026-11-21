@@ -2,13 +2,13 @@
 # usage: tools/lobby.sh <seeds> '<name>:<flags-json>' '<name>:<flags-json>'   (2 test slots in a mostly-aggressive lobby)
 cd "$(dirname "$0")/.."
 N=$1; n1=${2%%:*}; f1=${2#*:}; n2=${3%%:*}; f2=${3#*:}
-C='{"mode":"squad","focus":0,"dmgup":0,"cubegrab":0,"gl":0}'
-D5='{"mode":"squad","gl":0}'
-GL='{"mode":"squad","gl":1}'
-D4='{"mode":"squad","gl":0,"retreat":1,"r1":0.25,"r2":0.25,"r3":0.25,"rexit":0.6}'
-ZR='{"mode":"squad","gl":0,"zaprespect":1,"peek":1}'
-V5='{"mode":"squad","gl":0,"retreat":1,"selective":1,"peek":1,"zaprespect":1,"chase":0,"focus":0,"dmgup":0,"cubegrab":0}'
-A='{"mode":"squad","avoid":1,"selective":1,"retreat":1,"chase":0}'
+C='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"focus":0,"dmgup":0,"cubegrab":0,"gl":0}'
+D5='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"gl":0}'
+GL='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"gl":1}'
+D4='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"gl":0,"retreat":1,"r1":0.25,"r2":0.25,"r3":0.25,"rexit":0.6}'
+ZR='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"gl":0,"zaprespect":1,"peek":1}'
+V5='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"gl":0,"retreat":1,"selective":1,"peek":1,"zaprespect":1,"chase":0,"focus":0,"dmgup":0,"cubegrab":0}'
+A='{"mode":"squad","econ_cubes":0,"drops":0,"near_r":180,"avoid":1,"selective":1,"retreat":1,"chase":0}'
 if [ "${LOBBY:-mix}" = "allagg" ]; then
   HIST=${HIST:-} python3 tools/ffa_sim.py ../kit/mechfight-kit/check/stream.jsonl.gz --seeds $N --start ${START:-1} --procs 4 --lobby "[[\"C\",4,$C],[\"D5\",4,$D5],[\"GL\",3,$GL],[\"D4\",2,$D4],[\"ZR\",1,$ZR],[\"$n1\",1,$f1],[\"$n2\",1,$f2]]" | grep -E "^($n1|$n2|avg) |hist"; exit 0
 fi
