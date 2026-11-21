@@ -331,7 +331,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 1, "econ_t": 0, "near_r": 100, "roofprio": 0, "kiter": 0, "bystander_first": 0, "econ_cubes": 10, "econ_cap": 170, "econ_nokill": 0, "precharge": 0, "boostfight": 0, "passive_t": 0, "kill_cap": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 1, "econ_t": 0, "near_r": 100, "roofprio": 0, "kiter": 0, "bystander_first": 0, "econ_cubes": 10, "econ_cap": 170, "econ_nokill": 0, "precharge": 0, "boostfight": 0, "passive_t": 0, "kill_cap": 4, "passive_len": 60}
         self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -346,6 +346,8 @@ class Bot:
         self.alive0 = None
         self.ramped = False
         self.probe_passive = False
+        self.probe_used = False
+        self.probe_t0 = 0.0
         self.econ = False
         self.econ_done = False
         self.npc_mem = {}
@@ -630,8 +632,15 @@ class Bot:
             if self.mode != "ffa" and not self.probe_passive:
                 pt_ = self.F.get("passive_t", 0)
                 kc_ = self.F.get("kill_cap", 0)
-                if (pt_ and obs.get("t", 0.0) >= pt_) or (kc_ and self.kills >= kc_):
+                if not self.probe_used and ((pt_ and obs.get("t", 0.0) >= pt_) or (kc_ and self.kills >= kc_)):
                     self.probe_passive = True
+                    self.probe_used = True
+                    self.probe_t0 = obs.get("t", 0.0)
+            elif self.probe_passive and self.F.get("passive_len", 0) and obs.get("t", 0.0) - self.probe_t0 >= self.F["passive_len"]:
+                # pause over: go back to the normal squad play
+                self.probe_passive = False
+                self.set_mode(self.mode)
+                self.F["econ_cubes"] = 0
             if self.probe_passive and self.mode != "ffa":
                 self.econ = False
                 self.F["avoid"] = 1
