@@ -331,7 +331,7 @@ class Bot:
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
         self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180}
-        self.F.update({"mode": "auto", "open_s": 0.0, "third": 0.0})
+        self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
         self.env_flags = {}
         try:
             self.env_flags = json.loads(os.environ.get("MECH_FLAGS", "{}"))
@@ -343,6 +343,10 @@ class Bot:
         self.base_chase = self.F.get("chase", 0)
         self.kills = 0
         self.alive0 = None
+        self.hp_prev = {}
+        self.hp_prev_tick = -99
+        self.myhits_prev = set()
+        self.foreign_hits = 0
         self.F.update(self.env_flags)
         if self.F.get("mode") == "auto":
             self.set_mode("open")
@@ -406,7 +410,10 @@ class Bot:
 
     def set_mode(self, name):
         f = dict(self.base_F)
-        f.update(self.PROFILES.get(name, {}))
+        prof = name
+        if name == "open":
+            prof = self.env_flags.get("open_prof", self.base_F.get("open_prof", "open"))
+        f.update(self.PROFILES.get(prof, {}))
         f.update(self.env_flags)
         self.F = f
         self.mode = name
@@ -567,9 +574,33 @@ class Bot:
             for ev in obs.get("events") or []:
                 if ev.get("type") == "kill":
                     self.kills += 1
+            # mechs losing a weapon-sized chunk of HP that we did not cause = others are fighting each other
+            if self.F.get("fh", 0) and self.mode != "ffa":
+                tk = obs.get("tick", 0)
+                myhits = set()
+                for ev in obs.get("events") or []:
+                    if ev.get("type") == "hit":
+                        myhits.add(ev.get("target"))
+                prev = self.hp_prev
+                cur = {}
+                for m_ in obs.get("mechs") or []:
+                    if m_.get("kind") != "mech" or "hp" not in m_:
+                        continue
+                    mid_ = m_.get("id")
+                    cur[mid_] = m_["hp"]
+                    if mid_ in myhits or mid_ in self.myhits_prev or "mortar" in (m_.get("weapons") or []):
+                        continue
+                    ph_ = prev.get(mid_)
+                    if ph_ is not None and tk - self.hp_prev_tick <= 2 and ph_ - m_["hp"] >= 44.0:
+                        self.foreign_hits += 1
+                self.hp_prev = cur
+                self.hp_prev_tick = tk
+                self.myhits_prev = myhits
             if self.F.get("mode") == "auto":
                 tt = obs.get("t", 0.0)
                 unexplained = (self.alive0 - alive_now) - self.kills
+                if self.mode != "ffa" and self.foreign_hits >= self.F.get("fh_n", 3):
+                    self.set_mode("ffa")
                 if self.mode != "ffa" and (unexplained >= 2 or (unexplained >= 1 and tt < 60.0)):
                     self.set_mode("ffa")   # mechs are dying that we did not kill: others fight each other
                 elif self.mode == "open" and tt >= self.F.get("open_s", 40.0):
@@ -889,6 +920,33 @@ class Bot:
         same_level = target is not None and self.onroof and abs(target["pos"][2] - z) < 5.0 and tgt_d < 70
         contact = bool(threats) or recently_hit or t - self.last_seen_enemy_t < 8.0
         zone_need = self.zone_mode and (dnc > nr * 0.55 or nr <= 1.0 or not in_zone)
+        # free-for-all opening: put distance between us and every mech that can see us
+        flee_mv = None
+        if self.mode == "ffa" and t < F.get("flee_t", 0) and not same_level:
+            ax = ay = 0.0
+            for d_, m_, l_ in all_threats:
+                if l_ and d_ < 220:
+                    p_ = m_["pos"]
+                    w_ = 1.0 / max(20.0, d_)
+                    ux_, uy_ = norm2(x - p_[0], y - p_[1])
+                    ax += ux_ * w_
+                    ay += uy_ * w_
+            if ax or ay:
+                ax, ay = norm2(ax, ay)
+                bsc = -1e9
+                for k in range(16):
+                    a_ = k * TAU / 16
+                    cx_, cy_ = math.cos(a_), math.sin(a_)
+                    sc_ = cx_ * ax + cy_ * ay
+                    if not self.step_ok(x, y, cx_, cy_, 7.0):
+                        sc_ -= 1.5
+                    elif nav.ok and nav.val(x + cx_ * 16.0, y + cy_ * 16.0) != 1:
+                        sc_ -= 0.6
+                    if not zone_ok(x + cx_ * 25.0, y + cy_ * 25.0, -10):
+                        sc_ -= 3.0
+                    if sc_ > bsc:
+                        bsc = sc_
+                        flee_mv = (cx_, cy_)
         if nr <= 1.0 and in_zone and dnc < max(3.0, zr * 0.3) and (fight or self.retreat) and edge_gap > 5:
             zone_need = False
         fmv = None
@@ -917,6 +975,11 @@ class Bot:
                 move = (0.0, 0.0)
             if zone_urgent:
                 self.climb = None
+        elif flee_mv is not None:
+            label = "flee"
+            move = flee_mv
+            boost = energy > 10
+            self.climb = None
         elif rf is not None and self.climb is not None:
             label = "climb"
             move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
