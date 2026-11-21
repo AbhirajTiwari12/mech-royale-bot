@@ -281,6 +281,7 @@ UPGRADE_DMG = [
     "plating", "armor", "nanites", "servos", "gun_mag", "gun_velocity", "reactor", "capacitor", "gyros", "laser_pierce",
     "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity",
 ]
+WRANK_GL = {"laser": 4, "gun": 3, "lightning": 2, "mortar": 1}
 WRANK = {"lightning": 4, "laser": 3, "gun": 2, "mortar": 1}
 
 
@@ -329,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0}
         try:
             self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
         except Exception:
@@ -392,9 +393,10 @@ class Bot:
         for i in (1, 0):
             if kinds[i] is None:
                 return True, None
-        r = WRANK.get(kind, 0)
-        lo = 0 if WRANK.get(kinds[0], 0) <= WRANK.get(kinds[1], 0) else 1
-        if r > WRANK.get(kinds[lo], 0):
+        WR = WRANK_GL if self.F["gl"] else WRANK
+        r = WR.get(kind, 0)
+        lo = 0 if WR.get(kinds[0], 0) <= WR.get(kinds[1], 0) else 1
+        if r > WR.get(kinds[lo], 0):
             w = ws[lo]
             if w.get("kind") == "laser" and (w.get("charge") or 0) > 0:
                 return False, None
@@ -687,6 +689,10 @@ class Bot:
                 s = 0.5 * d + 0.09 * m.get("hp", 1000) + (0 if los else 60)
                 if m.get("id") == self.cur_target:
                     s -= 15
+                if F["rearpref"] and los:
+                    p_ = m["pos"]
+                    if abs(angdiff(math.atan2(y - p_[1], x - p_[0]), (m.get("aim") or [0, 0])[0])) > 1.7:
+                        s -= 30  # its back is to us: x1.5 damage
             else:
                 s = d + 40.0 * (m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))) + (0 if los else 80)
             if m.get("id") == self.last_dmg_by and recently_hit:
@@ -1297,7 +1303,7 @@ class Bot:
         elif "lightning" in ew:
             R = 75.0 if laser else 58.0
         elif laser:
-            R = 70.0
+            R = 45.0 if (self.F["gl"] and self.w_slot(me, "gun")[1]) else 70.0
         else:
             R = 32.0
         nh = getattr(self, "n_close", 1)

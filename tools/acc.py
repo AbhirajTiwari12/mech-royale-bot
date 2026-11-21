@@ -34,5 +34,6 @@ for seed in range(1, n + 1):
     r = sim.run()
     C['kills'] += r['kills']; C['t'] += r['t']
 print({k: round(v / n, 1) for k, v in sorted(C.items())})
+print('dmg per fight-second %.0f' % (sum(v for k, v in C.items() if k.startswith('dmg_')) / max(1, C['fight_ticks']) * 20), 'kills %.2f' % (C['kills'] / n))
 for w in ('gun', 'laser', 'lightning'):
     if C['shot_' + w]: print(w, 'hit rate %.2f' % (C['hit_' + w] / C['shot_' + w]), 'shots per fight-sec-with-weapon %.2f' % (C['shot_' + w] / max(1, C['have_' + w]) * 20))
