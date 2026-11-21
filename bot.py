@@ -324,7 +324,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 1, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 1, "sel_near": 45.0, "zaprespect": 1, "kite": 0, "peek": 1}
+        self.F = {"roof": 0, "retreat": 1, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 1, "sel_near": 45.0, "zaprespect": 1, "kite": 0, "peek": 1, "avoid": 1, "farm_until": 0, "chase": 0}
         try:
             self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
         except Exception:
@@ -635,6 +635,7 @@ class Bot:
         if threats:
             self.last_seen_enemy_t = t
         recently_hit = t - self.last_dmg_t < 3.0
+        all_threats = threats
         if F["selective"]:
             # only mechs that act hostile (shot us, or close in while aiming at us) are fought
             hs = self.hostile
@@ -716,6 +717,23 @@ class Bot:
         engage_r = 150.0 if laser else 100.0
         fight = target is not None and (tgt_d < engage_r or (recently_hit and tgt_d < 220))
 
+        hold_fire = False
+        if F["avoid"]:
+            # pure evasion: never fight, hide from every mech we know about
+            fight = False
+            hold_fire = True
+            if all_threats:
+                self.retreat = True
+                cover_th = all_threats[:4]
+                self.mem_threats = [(d_, m_, False) for d_, m_, l_ in all_threats[:4]]
+                self.mem_threats_t = t
+            elif t - self.mem_threats_t > 6 and not recently_hit:
+                self.retreat = False
+        elif F["farm_until"] and t < F["farm_until"] and hpf > 0.5:
+            # power up first: do not fight (or kill) the early hunter, keep looting
+            fight = False
+            self.retreat = False
+            hold_fire = True
         # ---- strafing clock
         if t >= self.strafe_until:
             self.strafe = -self.strafe if self.rng.random() < 0.75 else self.strafe
@@ -882,6 +900,8 @@ class Bot:
         aim_target = target
         loot_tgt = getattr(self, "_shoot", None)  # (pos3, kind) from loot_move
         self._shoot = None
+        if hold_fire and aim_target is not None and loot_tgt is not None and (tgt_d > 45 or not tgt_los):
+            aim_target = None
         if self.retreat:
             loot_tgt = None
         if aim_target is None and loot_tgt is None and npcs and hpf > 0.3 and not self.retreat:
@@ -1057,6 +1077,8 @@ class Bot:
             act["jump"] = True
         if aim is not None:
             act["aim"] = [round(aim[0], 4), round(max(-0.7, min(1.3, aim[1])), 4)]
+        if hold_fire and aim_target is not None:
+            fire = [False, False]
         act["fire"] = [bool(fire[0]), bool(fire[1])]
         act["debug"] = {"label": "%s hp%d" % (label, hp)}
         return act
@@ -1266,7 +1288,7 @@ class Bot:
                     if self.step_ok(x, y, sx, sy):
                         return (sx, sy), False
                 return (0.0, 0.0), False
-            if zap and d < 90:
+            if (zap and d < 90) or self.F["chase"]:
                 return self.nav_move(x, y, ex, ey), False
             return None
         rad = 0.0
@@ -1454,6 +1476,8 @@ class Bot:
         best = None
         bs = 0.0
         enemy_near = threats and threats[0][0] < 180
+        if self.F["farm_until"] and t < self.F["farm_until"]:
+            enemy_near = False
 
         def reachable(p):
             if not nav.ok:
