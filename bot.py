@@ -331,10 +331,21 @@ class Bot:
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
         self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 0, "rearpref": 0}
+        self.F.update({"mode": "auto", "open_s": 40.0, "third": 0.0})
+        self.env_flags = {}
         try:
-            self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
+            self.env_flags = json.loads(os.environ.get("MECH_FLAGS", "{}"))
         except Exception:
-            pass
+            self.env_flags = {}
+        self.base_F = dict(self.F)
+        self.mode = "squad"
+        self.kills = 0
+        self.alive0 = None
+        self.F.update(self.env_flags)
+        if self.F.get("mode") == "auto":
+            self.set_mode("open")
+        elif self.F.get("mode") == "ffa":
+            self.set_mode("ffa")
         self.pk_cands = None
         self.pk_i = 0
         self.pk_best = None
@@ -374,6 +385,23 @@ class Bot:
         self.mem_threats_t = -99.0
         self._shoot = None
         self.deadline = 0.0
+
+    # ------------------------------------------------------------------ modes
+    PROFILES = {
+        "squad": {},
+        # cautious opening used until we know which kind of match this is
+        "open": {"retreat": 1, "selective": 1, "peek": 1, "zaprespect": 1, "chase": 0},
+        # free-for-all: outlive the others
+        "ffa": {"retreat": 1, "r1": 0.6, "r2": 0.8, "r3": 0.9, "rexit": 0.9, "selective": 1, "peek": 1, "zaprespect": 2,
+                "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1},
+    }
+
+    def set_mode(self, name):
+        f = dict(self.base_F)
+        f.update(self.PROFILES.get(name, {}))
+        f.update(self.env_flags)
+        self.F = f
+        self.mode = name
 
     # ------------------------------------------------------------------ helpers
     def w_slot(self, me, kind):
@@ -522,6 +550,26 @@ class Bot:
     # ------------------------------------------------------------------ main
     def act(self, obs):
         t0 = time.perf_counter()
+        try:
+            alive_now = obs.get("alive", 16)
+            if self.alive0 is None:
+                self.alive0 = alive_now
+            for ev in obs.get("events") or []:
+                if ev.get("type") == "kill":
+                    self.kills += 1
+            if self.F.get("mode") == "auto":
+                tt = obs.get("t", 0.0)
+                unexplained = (self.alive0 - alive_now) - self.kills
+                if self.mode != "ffa" and (unexplained >= 2 or (unexplained >= 1 and tt < 60.0)):
+                    self.set_mode("ffa")   # mechs are dying that we did not kill: others fight each other
+                elif self.mode == "open" and tt >= self.F.get("open_s", 40.0):
+                    self.set_mode("squad")
+            if self.mode == "ffa" and self.F.get("mode") != "squad":
+                end = alive_now <= self.F.get("end_alive", 3)
+                self.F["avoid"] = 0 if end else self.PROFILES["ffa"]["avoid"] if "avoid" not in self.env_flags else self.env_flags["avoid"]
+                self.F["chase"] = 1 if end else 0
+        except Exception:
+            pass
         F = self.F
         self.deadline = t0 + 0.006
         nav = self.nav
@@ -667,6 +715,8 @@ class Bot:
                     p = m["pos"]
                     if abs(angdiff(math.atan2(y - p[1], x - p[0]), (m.get("aim") or [0, 0])[0])) < 0.15:
                         hs[mid] = t + 15.0
+                if F["third"] and los and d < 110 and hpf > 0.6 and m.get("hp", 9999) < F["third"] * max(1.0, m.get("max_hp", 1400)) and m.get("hp", 9999) < hp:
+                    hs[mid] = max(hs.get(mid, 0), t + 6.0)   # weakened mech in reach: finish it for the cubes
                 if hs.get(mid, 0) > t:
                     keep.append((d, m, los))
             self.bystanders = [a_ for a_ in threats if hs.get(a_[1].get("id"), 0) <= t]
@@ -737,7 +787,21 @@ class Bot:
         fight = target is not None and (tgt_d < engage_r or (recently_hit and tgt_d < 220))
 
         hold_fire = False
-        if F["avoid"]:
+        if F["avoid"] == 2:
+            # free-for-all caution: fight only what is hostile and close (or weak); otherwise keep out of everyone's sight
+            cornered = target is not None and tgt_los and tgt_d < F.get("corner", 75)
+            weak = target is not None and target.get("hp", 9999) < 0.35 * max(1.0, target.get("max_hp", 1400)) and hpf > 0.5
+            if not (cornered or weak):
+                near = [a_ for a_ in all_threats if a_[0] < F.get("shy", 150) and (a_[2] or not F.get("shylos", 0) or a_[0] < 50)]
+                if near:
+                    fight = False
+                    self.retreat = True
+                    cover_th = near[:4]
+                    self.mem_threats = [(d_, m_, False) for d_, m_, l_ in near[:4]]
+                    self.mem_threats_t = t
+                elif hpf > F["rexit"] or (hpf > 0.5 and not recently_hit and t - self.mem_threats_t > 6):
+                    self.retreat = False
+        elif F["avoid"]:
             # pure evasion: never fight, hide from every mech we know about
             fight = False
             hold_fire = True
@@ -886,7 +950,7 @@ class Bot:
             if mv is not None:
                 label = "loot"
                 move = mv
-            elif rf is not None:
+            elif rf is not None and F["roof"] != 2:
                 label = "nest"
                 move, boost, jump = self.roof_move(t, me, cover_th, target, True, energy)
                 no_unstuck = no_unstuck or self.climb is not None
