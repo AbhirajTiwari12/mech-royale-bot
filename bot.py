@@ -276,6 +276,11 @@ UPGRADE_PRIO = [
     "lightning_range", "lightning_chain", "gun_damage", "gun_rate", "reactor", "capacitor", "gyros",
     "gun_mag", "gun_velocity", "jets", "laser_pierce", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity",
 ]
+UPGRADE_DMG = [
+    "laser_damage", "lightning_efficiency", "gun_damage", "gun_rate", "laser_charge", "lightning_chain", "lightning_range",
+    "plating", "armor", "nanites", "servos", "gun_mag", "gun_velocity", "reactor", "capacitor", "gyros", "laser_pierce",
+    "jets", "sensors", "mortar_reload", "mortar_splash", "mortar_velocity",
+]
 WRANK = {"lightning": 4, "laser": 3, "gun": 2, "mortar": 1}
 
 
@@ -324,7 +329,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 1, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 1, "sel_near": 45.0, "zaprespect": 1, "kite": 0, "peek": 1, "avoid": 0, "farm_until": 0, "chase": 0}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1}
         try:
             self.F.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
         except Exception:
@@ -336,6 +341,7 @@ class Bot:
         self.pk_t = -99.0
         self.pk_spot = None
         self.pk_score = 0.0
+        self.cur_target = None
         self.hostile = {}
         self.dist_hist = {}
         self.bystanders = []
@@ -541,7 +547,8 @@ class Bot:
             best_i, best_r = 0, 999
             for i, ch in enumerate(offer["choices"]):
                 cid = ch.get("id")
-                r = UPGRADE_PRIO.index(cid) if cid in UPGRADE_PRIO else 500
+                prio = UPGRADE_DMG if F["dmgup"] else UPGRADE_PRIO
+                r = prio.index(cid) if cid in prio else 500
                 if r < best_r:
                     best_i, best_r = i, r
             act["pick"] = best_i
@@ -676,12 +683,18 @@ class Bot:
         tgt_los = False
         bests = 1e18
         for d, m, los in threats:
-            s = d + 40.0 * (m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))) + (0 if los else 80)
+            if F["focus"]:
+                s = 0.5 * d + 0.09 * m.get("hp", 1000) + (0 if los else 60)
+                if m.get("id") == self.cur_target:
+                    s -= 15
+            else:
+                s = d + 40.0 * (m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))) + (0 if los else 80)
             if m.get("id") == self.last_dmg_by and recently_hit:
                 s -= 25
             if s < bests:
                 bests = s
                 target, tgt_d, tgt_los = m, d, los
+        self.cur_target = target.get("id") if target is not None else None
         n_close = sum(1 for d, m, los in threats if los and d < 150)
         self.n_close = n_close
 
