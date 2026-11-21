@@ -330,7 +330,7 @@ class Bot:
         self.zone_mode = False
         self.unstuck_t0 = -9.0
         self.nav_arrived = False
-        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 0, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180}
+        self.F = {"roof": 0, "retreat": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "selective": 0, "sel_near": 45.0, "zaprespect": 0, "kite": 0, "peek": 0, "avoid": 0, "farm_until": 0, "chase": 1, "focus": 1, "dmgup": 1, "cubegrab": 30, "gl": 1, "rearpref": 0, "drops": 0, "econ_t": 0, "near_r": 180}
         self.F.update({"mode": "auto", "open_s": 0.0, "third": 0.0})
         self.env_flags = {}
         try:
@@ -401,7 +401,7 @@ class Bot:
         "open": {"retreat": 1, "selective": 1, "peek": 1, "zaprespect": 1, "chase": 0},
         # free-for-all: outlive the others
         "ffa": {"retreat": 1, "r1": 0.6, "r2": 0.8, "r3": 0.9, "rexit": 0.9, "selective": 1, "peek": 1, "zaprespect": 2,
-                "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1},
+                "chase": 0, "avoid": 2, "dmgup": 0, "third": 0.35, "roof": 1, "gl": 0},
     }
 
     def set_mode(self, name):
