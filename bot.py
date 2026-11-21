@@ -353,6 +353,12 @@ class Bot:
         self.pk_t = -99.0
         self.pk_spot = None
         self.pk_score = 0.0
+        self.den = None
+        self.den_t = -99.0
+        self.den_cands = None
+        self.den_i = 0
+        self.den_best = None
+        self.den_bs = -1e18
         self.cur_target = None
         self.hostile = {}
         self.dist_hist = {}
@@ -715,7 +721,8 @@ class Bot:
                     p = m["pos"]
                     if abs(angdiff(math.atan2(y - p[1], x - p[0]), (m.get("aim") or [0, 0])[0])) < 0.15:
                         hs[mid] = t + 15.0
-                if F["third"] and los and d < 110 and hpf > 0.6 and m.get("hp", 9999) < F["third"] * max(1.0, m.get("max_hp", 1400)) and m.get("hp", 9999) < hp:
+                th3 = F["third"] if t < F.get("third_t", 1e9) else F.get("third_late", F["third"])
+                if th3 and los and d < 110 and hpf > 0.6 and m.get("hp", 9999) < th3 * max(1.0, m.get("max_hp", 1400)) and m.get("hp", 9999) < hp:
                     hs[mid] = max(hs.get(mid, 0), t + 6.0)   # weakened mech in reach: finish it for the cubes
                 if hs.get(mid, 0) > t:
                     keep.append((d, m, los))
@@ -790,8 +797,21 @@ class Bot:
         if F["avoid"] == 2:
             # free-for-all caution: fight only what is hostile and close (or weak); otherwise keep out of everyone's sight
             cornered = target is not None and tgt_los and tgt_d < F.get("corner", 75)
-            weak = target is not None and target.get("hp", 9999) < 0.35 * max(1.0, target.get("max_hp", 1400)) and hpf > 0.5
-            if not (cornered or weak):
+            th3_ = F["third"] if t < F.get("third_t", 1e9) else F.get("third_late", F["third"])
+            weak = target is not None and target.get("hp", 9999) < max(0.35, th3_) * max(1.0, target.get("max_hp", 1400)) and hpf > 0.5
+            arming = False
+            if F.get("armfirst", 0) and not (zap or laser or mortar):
+                # unarmed: a weapon within reach comes before hiding
+                for iid, it in items.items():
+                    if it["type"] == "pickup" and self.black.get(iid, 0) <= t:
+                        p_ = it["pos"]
+                        if math.hypot(p_[0] - x, p_[1] - y) < F["armfirst"] and abs(p_[2] - nav.surf_at(p_[0], p_[1])) < 4.0 and nav.val(p_[0], p_[1]) == 1:
+                            arming = True
+                            break
+            if arming:
+                fight = False
+                self.retreat = False
+            elif not (cornered or weak):
                 near = [a_ for a_ in all_threats if a_[0] < F.get("shy", 150) and (a_[2] or not F.get("shylos", 0) or a_[0] < 50)]
                 if near:
                     fight = False
@@ -945,7 +965,7 @@ class Bot:
                     boost = False
         else:
             mv = None
-            if not (self.onroof and contact):
+            if not (self.onroof and contact) and not F.get("noloot", 0):
                 mv = self.loot_move(t, me, obs, npcs, hpf, zone_ok, threats)
             if mv is not None:
                 label = "loot"
@@ -956,7 +976,15 @@ class Bot:
                 no_unstuck = no_unstuck or self.climb is not None
             else:
                 label = "roam"
-                if self.roam is None or arrived_prev or t - self.roam_t > 20 or math.hypot(self.roam[0] - x, self.roam[1] - y) < 8 or not zone_ok(self.roam[0], self.roam[1]):
+                if F.get("den", 0) and nav.ok:
+                    label = "den"
+                    dm = self.den_move(t, x, y, z, ncx, ncy, nr, zone_ok)
+                    if dm is not None:
+                        move = dm
+                        self.roam = None
+                if label == "den" and self.roam is None:
+                    pass
+                elif self.roam is None or arrived_prev or t - self.roam_t > 20 or math.hypot(self.roam[0] - x, self.roam[1] - y) < 8 or not zone_ok(self.roam[0], self.roam[1]):
                     self.roam = (ncx, ncy)
                     for _ in range(8):
                         a = self.rng.random() * TAU
@@ -966,7 +994,8 @@ class Bot:
                             self.roam = (rx, ry)
                             break
                     self.roam_t = t
-                move = self.nav_move(x, y, self.roam[0], self.roam[1])
+                if self.roam is not None:
+                    move = self.nav_move(x, y, self.roam[0], self.roam[1])
 
         # ---- dodge mortar shells
         for pr in obs.get("projectiles") or []:
@@ -1205,7 +1234,7 @@ class Bot:
                 continue
             cx, cy = r["camp"]
             d = math.hypot(cx - x, cy - y)
-            if d > 260:
+            if d > self.F.get("roofnear", 260):
                 continue
             H = r["z"] - r["acc"][0][4]
             sc = -d + 5.0 * min(r["inset"] * 3.0, 24.0) + (25.0 if 12 <= H <= 30 else 0.0) - (40.0 if H > 30 else 0.0)
@@ -1352,6 +1381,68 @@ class Bot:
         if nav.val(x + ux * 4.0, y + uy * 4.0) != 2 and nav.val(x, y) == 2:
             return (0.0, 0.0)
         return (ux, uy)
+
+    # ------------------------------------------------------------------ den (enclosed hiding spot)
+    def den_move(self, t, x, y, z, ncx, ncy, nr, zone_ok):
+        """Stand still in the most enclosed nearby spot inside the next circle. Returns move or None."""
+        nav = self.nav
+        den = self.den
+        if den is not None and not (math.hypot(den[0] - ncx, den[1] - ncy) < nr - 12 and zone_ok(den[0], den[1], -5)):
+            den = self.den = None
+        if self.den_cands is None and (den is None or t - self.den_t > 12.0):
+            self.den_t = t
+            cands = []
+            if den is not None:
+                cands.append(den)
+            for _ in range(28):
+                a = self.rng.random() * TAU
+                r = 12.0 + 110.0 * self.rng.random()
+                cx, cy = x + math.cos(a) * r, y + math.sin(a) * r
+                if nav.val(cx, cy) == 1 and math.hypot(cx - ncx, cy - ncy) < nr - 15 and zone_ok(cx, cy, -5):
+                    cands.append((cx, cy))
+            if not cands and nr > 20:
+                for _ in range(10):
+                    a = self.rng.random() * TAU
+                    r = nr * 0.6 * self.rng.random()
+                    cx, cy = ncx + math.cos(a) * r, ncy + math.sin(a) * r
+                    if nav.val(cx, cy) == 1:
+                        cands.append((cx, cy))
+            self.den_cands = cands
+            self.den_i = 0
+            self.den_best = None
+            self.den_bs = -1e18
+        if self.den_cands is not None:
+            cands = self.den_cands
+            i = self.den_i
+            stop = min(self.deadline, time.perf_counter() + 0.002)
+            while i < len(cands):
+                cx, cy = cands[i]
+                i += 1
+                cz = nav.surf_at(cx, cy)
+                blocked = 0
+                for k in range(12):
+                    a = k * TAU / 12
+                    if not nav.los(cx, cy, cz + 8.0, cx + math.cos(a) * 60.0, cy + math.sin(a) * 60.0, cz + 6.0, 3.0):
+                        blocked += 1
+                sc = blocked * 10.0 - 0.12 * math.hypot(cx - x, cy - y)
+                if den is not None and abs(cx - den[0]) < 0.1 and abs(cy - den[1]) < 0.1:
+                    sc += 8.0
+                if sc > self.den_bs:
+                    self.den_bs = sc
+                    self.den_best = (cx, cy)
+                if time.perf_counter() > stop:
+                    break
+            self.den_i = i
+            if i >= len(cands):
+                self.den_cands = None
+                if self.den_best is not None:
+                    self.den = self.den_best
+        den = self.den
+        if den is None:
+            return None
+        if math.hypot(den[0] - x, den[1] - y) < 2.5:
+            return (0.0, 0.0)
+        return self.nav_move(x, y, den[0], den[1])
 
     # ------------------------------------------------------------------ fight
     def fight_move(self, t, me, e, d, los, zap, laser, energy, zone_ok):
