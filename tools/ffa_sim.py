@@ -35,8 +35,13 @@ class FFASim(A.Sim):
             else:
                 m["player"] = True
                 m["weapons"][1] = None
-                os.environ["MECH_FLAGS"] = json.dumps(flags)
-                m["bot"] = botmod.Bot(dict(hello, slot=i, seed=seed * 100 + i))
+                if "arch" in flags:
+                    import archetypes
+                    os.environ["MECH_FLAGS"] = "{}"
+                    m["bot"] = archetypes.ARCH[flags["arch"]](dict(hello, slot=i, seed=seed * 100 + i))
+                else:
+                    os.environ["MECH_FLAGS"] = json.dumps(flags)
+                    m["bot"] = botmod.Bot(dict(hello, slot=i, seed=seed * 100 + i))
                 m["seen"] = {}
         os.environ.pop("MECH_FLAGS", None)
         self.bots = [m for m in self.mechs if m["player"]]

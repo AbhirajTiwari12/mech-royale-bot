@@ -613,7 +613,8 @@ class Bot:
                 self.F["chase"] = 0 if early else self.base_chase
             if self.mode == "ffa" and not self.ramped and self.F.get("ramp_t", 0):
                 # few deaths this late = a lobby of hiders: hiding no longer gains places, so start hunting
-                if obs.get("t", 0.0) >= self.F["ramp_t"] and alive_now >= self.F.get("ramp_alive", 9):
+                kr = self.F.get("kill_ramp", 0)
+                if (kr and self.kills >= kr) or (not kr and obs.get("t", 0.0) >= self.F["ramp_t"] and alive_now >= self.F.get("ramp_alive", 9)):
                     self.ramped = True
                     self.F.update({"selective": 0, "avoid": 0, "chase": 1, "roof": 0, "gl": 1, "dmgup": 1, "peek": 0,
                                    "zaprespect": 0, "r1": 0.45, "r2": 0.7, "r3": 0.85, "rexit": 0.85, "third": 0.0})
